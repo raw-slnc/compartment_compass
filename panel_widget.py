@@ -2,6 +2,7 @@
 import re
 
 from qgis.PyQt.QtCore import (
+    QElapsedTimer,
     QEvent,
     QItemSelectionModel,
     QPoint,
@@ -23,6 +24,7 @@ from qgis.PyQt.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QSplitter,
@@ -119,7 +121,29 @@ def _numeric_match(cell_text, filter_text):
 
 
 def _text_match(cell_text, filter_text):
-    return filter_text.lower() in cell_text.lower()
+    # カンマ区切りでAND評価。先頭に"!"を付けたトークンは除外（非包含）条件になる。
+    # 例: "森林,!計画" は「森林を含み、かつ計画を含まない」。
+    cell_lower = cell_text.lower()
+    for token in filter_text.split(','):
+        token = token.strip()
+        if not token:
+            continue
+        if token.startswith('!'):
+            needle = token[1:].strip().lower()
+            if needle and needle in cell_lower:
+                return False
+        elif token.lower() not in cell_lower:
+            return False
+    return True
+
+
+def _looks_like_numeric_filter(filter_text):
+    # テキスト型フィールドでも、値が数字（例: GeoPackageのTEXT列に格納された
+    # 小班番号）で入力が比較演算子付きの場合は数値比較の意図とみなす。
+    tokens = [t.strip() for t in filter_text.split(',') if t.strip()]
+    if not tokens:
+        return False
+    return all(_NUM_TOKEN_RE.match(t) for t in tokens)
 
 
 # 大規模レイヤーでも全件を即座にウィジェット化しない（QGIS標準の属性テーブルと
@@ -236,6 +260,8 @@ class CompartmentCompassWindow(QWidget):
         self._filterDebounceTimer.timeout.connect(self._commit_pending_filters)
         self._pendingFilters = {}  # {col: (text, is_numeric)}、デバウンス中の未反映分
         self._activeFilters = {}  # {col: (text, is_numeric)}、確定済みの絞り込み条件
+        self._prevActiveFilters = {}  # 直前にrecomputeした時点のactiveFilters
+        self._prevMatchedFids = None  # 直前の一致fid集合（条件追加時の母集合再利用用）
         self._load_saved_state()
 
         # セル値ツールチップ用のフローティングラベル（QToolTipはマウス位置に応じて
@@ -418,6 +444,13 @@ class CompartmentCompassWindow(QWidget):
         )
         self.lblLegendJoin.setVisible(False)
         bottomRow.addWidget(self.lblLegendJoin)
+        bottomRow.addSpacing(12)
+        self.filterProgressBar = QProgressBar()
+        self.filterProgressBar.setFixedHeight(14)
+        self.filterProgressBar.setMaximumWidth(120)
+        self.filterProgressBar.setTextVisible(False)
+        self.filterProgressBar.hide()
+        bottomRow.addWidget(self.filterProgressBar)
         bottomRow.addStretch(1)
         self.btnEditMode = QPushButton(self.tr('Edit'))
         self.btnEditMode.setCheckable(True)
@@ -595,7 +628,8 @@ class CompartmentCompassWindow(QWidget):
         self.btnColumnConfig.setText(self.tr('Column config'))
         self.tipsGroup.setTitle(self.tr('Tips'))
         self.tipsRuleLabel.setText(self.tr(
-            'Text columns: substring match, case-insensitive.\n'
+            'Text columns: substring match, case-insensitive. '
+            'Comma-separated = AND; prefix "!" to exclude.\n'
             'Numeric columns: comma-separated comparisons '
             '(>, >=, <, <=, ==, !=). No operator = exact match.'
         ))
@@ -605,6 +639,8 @@ class CompartmentCompassWindow(QWidget):
             self.tr('100 or more, less than 200'),
             self.tr('Not equal to 0'),
             self.tr('Exactly 100'),
+            self.tr('Excludes "abc"'),
+            self.tr('Contains "abc", excludes "xyz"'),
         ]
         for label, text in zip(self.tipsExplLabels, tips_explanations):
             label.setText(text)
@@ -703,6 +739,13 @@ class CompartmentCompassWindow(QWidget):
         self._disconnect_selection_signal(self._currentLayer)
         self._restore_selection_color()
         self._currentLayer = layer
+        # レイヤー名・タイプ表示とコンボの選択反映を、続く重い読み込み処理の前に
+        # 画面へ描画させる（processEventsで一度イベントループに戻す）。これが
+        # 無いとコンボ選択のハイライトすら読み込み完了まで反映されず、操作が
+        # 効いていないように見える。
+        self.btnEditMode.setEnabled(self._is_gpkg_layer(layer))
+        self._update_layer_type_label(layer)
+        QApplication.processEvents()
         self._reset_column_config(layer)
         self._populate_table(layer)
         self._refresh_setting_combos(layer)
@@ -712,8 +755,6 @@ class CompartmentCompassWindow(QWidget):
             self._sync_table_selection_from_layer()
         else:
             self._update_info_tab()
-        self.btnEditMode.setEnabled(self._is_gpkg_layer(layer))
-        self._update_layer_type_label(layer)
 
     def _update_layer_type_label(self, layer):
         self._currentLayerTypeStr = (
@@ -1130,6 +1171,8 @@ class CompartmentCompassWindow(QWidget):
             self._filterProxy.set_matching_fids(None)
             self._pendingFilters = {}
             self._activeFilters = {}
+            self._prevActiveFilters = {}
+            self._prevMatchedFids = None
             self._filterDebounceTimer.stop()
             self._layerCache = None
             self._tableModel = None
@@ -1155,10 +1198,16 @@ class CompartmentCompassWindow(QWidget):
             # 大規模レイヤーでも表示に必要な行だけ遅延取得される
             # QgsVectorLayerCache+QgsAttributeTableModel（QGIS標準の属性テーブルと
             # 同じ仕組み）を使う。全フィーチャーの即時ウィジェット化はしない。
+            # loadLayer()自体は進捗を取得できないため、不定形（busy）表示にする。
+            self.filterProgressBar.setRange(0, 0)
+            self.filterProgressBar.show()
+            QApplication.processEvents()
             self._layerCache = QgsVectorLayerCache(layer, _LAYER_CACHE_SIZE)
             self._tableModel = QgsAttributeTableModel(self._layerCache)
             self._tableModel.loadLayer()
             self._filterProxy.setSourceModel(self._tableModel)
+            self.filterProgressBar.hide()
+            self.filterProgressBar.setRange(0, 1)
 
             self._modelColumnOrder = [
                 self._tableModel.fieldCol(layer.fields().indexFromName(name))
@@ -1235,6 +1284,8 @@ class CompartmentCompassWindow(QWidget):
                 self.tr('{0} features').format(self._filterProxy.rowCount())
             )
         finally:
+            self.filterProgressBar.hide()
+            self.filterProgressBar.setRange(0, 1)
             self._syncing_selection = previous_syncing
             self._populatingTable = False
 
@@ -1270,6 +1321,7 @@ class CompartmentCompassWindow(QWidget):
         # 所属確認（O(1)）だけにする。
         layer = self._currentLayer
         if layer is None or not self._activeFilters:
+            self.filterProgressBar.hide()
             self._filterProxy.set_matching_fids(None)
             return
 
@@ -1279,14 +1331,37 @@ class CompartmentCompassWindow(QWidget):
             field_index = self._modelColToFieldIndex.get(model_col)
             if field_index is None:
                 continue
-            checks.append((field_index, text, is_numeric))
+            use_numeric = is_numeric or _looks_like_numeric_filter(text)
+            checks.append((field_index, text, use_numeric))
             needed_indexes.append(field_index)
+
+        # 直前の条件がすべて今回にも同じ値で残っている（＝条件を追加しただけ）なら、
+        # 直前の一致fid集合を母集合として走査対象を絞り込める。条件の変更・削除は
+        # 前回の集合が正しい母集合でなくなるため、全件走査に戻す。
+        can_narrow_from_previous = self._prevMatchedFids is not None and all(
+            self._activeFilters.get(k) == v
+            for k, v in self._prevActiveFilters.items()
+        )
 
         request = QgsFeatureRequest()
         request.setSubsetOfAttributes(needed_indexes)
         request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
+        if can_narrow_from_previous:
+            request.setFilterFids(list(self._prevMatchedFids))
+
+        total = (
+            len(self._prevMatchedFids)
+            if can_narrow_from_previous
+            else layer.featureCount()
+        )
+        self.filterProgressBar.setRange(0, max(total, 1))
+        self.filterProgressBar.setValue(0)
+        self.filterProgressBar.show()
+        progress_timer = QElapsedTimer()
+        progress_timer.start()
 
         matched = set()
+        processed = 0
         for feature in layer.getFeatures(request):
             ok = True
             for field_index, text, is_numeric in checks:
@@ -1302,6 +1377,17 @@ class CompartmentCompassWindow(QWidget):
                     break
             if ok:
                 matched.add(feature.id())
+            processed += 1
+            # 全件ごとにprocessEventsを呼ぶとオーバーヘッドが積み重なるため、
+            # 100ms間隔でのみ描画更新する（進捗の粒度と処理速度のバランス）。
+            if progress_timer.elapsed() >= 100:
+                self.filterProgressBar.setValue(processed)
+                QApplication.processEvents()
+                progress_timer.restart()
+
+        self.filterProgressBar.hide()
+        self._prevActiveFilters = dict(self._activeFilters)
+        self._prevMatchedFids = matched
         self._filterProxy.set_matching_fids(matched)
 
     # -- Settingタブ ---------------------------------------------------
@@ -1505,7 +1591,8 @@ class CompartmentCompassWindow(QWidget):
         tipsLayout = QVBoxLayout(self.tipsGroup)
 
         self.tipsRuleLabel = QLabel(self.tr(
-            'Text columns: substring match, case-insensitive.\n'
+            'Text columns: substring match, case-insensitive. '
+            'Comma-separated = AND; prefix "!" to exclude.\n'
             'Numeric columns: comma-separated comparisons '
             '(>, >=, <, <=, ==, !=). No operator = exact match.'
         ))
@@ -1518,6 +1605,8 @@ class CompartmentCompassWindow(QWidget):
             ('>=100,<200', self.tr('100 or more, less than 200')),
             ('!=0', self.tr('Not equal to 0')),
             ('100', self.tr('Exactly 100')),
+            ('!abc', self.tr('Excludes "abc"')),
+            ('abc,!xyz', self.tr('Contains "abc", excludes "xyz"')),
         ]
         grid = QGridLayout()
         self.tipsExplLabels = []

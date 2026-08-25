@@ -165,36 +165,46 @@
         <translation>QGIS内識別番号:</translation>
     </message>
     <message>
-        <location filename="../panel_widget.py" line="1492"/>
-        <source>Text columns: substring match, case-insensitive.
+        <location filename="../panel_widget.py" line="632"/>
+        <source>Text columns: substring match, case-insensitive. Comma-separated = AND; prefix &quot;!&quot; to exclude.
 Numeric columns: comma-separated comparisons (&gt;, &gt;=, &lt;, &lt;=, ==, !=). No operator = exact match.</source>
-        <translation>テキスト列: 部分一致（大文字小文字を区別しません）。
+        <translation>テキスト列: 部分一致（大文字小文字を区別しません）。カンマ区切りはAND、先頭に&quot;!&quot;を付けると除外。
 数値列: カンマ区切りの比較式（&gt;, &gt;=, &lt;, &lt;=, ==, !=）。演算子省略は完全一致。</translation>
     </message>
     <message>
-        <location filename="../panel_widget.py" line="1501"/>
+        <location filename="../panel_widget.py" line="637"/>
         <source>100 or more</source>
         <translation>100以上</translation>
     </message>
     <message>
-        <location filename="../panel_widget.py" line="1502"/>
+        <location filename="../panel_widget.py" line="638"/>
         <source>Less than 200</source>
         <translation>200未満</translation>
     </message>
     <message>
-        <location filename="../panel_widget.py" line="1503"/>
+        <location filename="../panel_widget.py" line="639"/>
         <source>100 or more, less than 200</source>
         <translation>100以上200未満</translation>
     </message>
     <message>
-        <location filename="../panel_widget.py" line="1504"/>
+        <location filename="../panel_widget.py" line="640"/>
         <source>Not equal to 0</source>
         <translation>0以外</translation>
     </message>
     <message>
-        <location filename="../panel_widget.py" line="1505"/>
+        <location filename="../panel_widget.py" line="641"/>
         <source>Exactly 100</source>
         <translation>100と完全一致</translation>
+    </message>
+    <message>
+        <location filename="../panel_widget.py" line="642"/>
+        <source>Excludes &quot;abc&quot;</source>
+        <translation>&quot;abc&quot;を含まない</translation>
+    </message>
+    <message>
+        <location filename="../panel_widget.py" line="643"/>
+        <source>Contains &quot;abc&quot;, excludes &quot;xyz&quot;</source>
+        <translation>&quot;abc&quot;を含み&quot;xyz&quot;を含まない</translation>
     </message>
     <message>
         <location filename="../panel_widget.py" line="1512"/>
