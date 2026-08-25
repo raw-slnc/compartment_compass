@@ -82,6 +82,8 @@ def _iter_layer_tree_layers(node):
 
 
 INFO_FIELD_COUNT = 10
+_DEFER_TABLE_LOAD_ON_LAYER_SELECT = False
+_SUPPRESS_TABLE_LAYOUT_SIGNALS = True
 
 LANGUAGE_CYCLE = ['en', 'ja']
 LANGUAGE_LABELS = {'en': 'English', 'ja': '日本語'}
@@ -137,13 +139,14 @@ def _text_match(cell_text, filter_text):
     return True
 
 
-def _looks_like_numeric_filter(filter_text):
-    # テキスト型フィールドでも、値が数字（例: GeoPackageのTEXT列に格納された
-    # 小班番号）で入力が比較演算子付きの場合は数値比較の意図とみなす。
+def _looks_like_numeric_comparison_filter(filter_text):
+    # テキスト型フィールドでは、数字だけの入力は地名・小班名などの部分一致を優先する。
+    # 比較演算子が含まれる場合だけ、数値比較の意図とみなす。
     tokens = [t.strip() for t in filter_text.split(',') if t.strip()]
     if not tokens:
         return False
-    return all(_NUM_TOKEN_RE.match(t) for t in tokens)
+    matched = [_NUM_TOKEN_RE.match(t) for t in tokens]
+    return all(matched) and any(m.group(1) for m in matched)
 
 
 # 大規模レイヤーでも全件を即座にウィジェット化しない（QGIS標準の属性テーブルと
@@ -427,6 +430,13 @@ class CompartmentCompassWindow(QWidget):
         self.lblLayerType = QLabel('')
         bottomRow.addWidget(self.lblLayerType)
         bottomRow.addSpacing(12)
+        self.filterProgressBar = QProgressBar()
+        self.filterProgressBar.setFixedHeight(14)
+        self.filterProgressBar.setMaximumWidth(120)
+        self.filterProgressBar.setTextVisible(False)
+        self.filterProgressBar.hide()
+        bottomRow.addWidget(self.filterProgressBar)
+        bottomRow.addSpacing(12)
         self.lblCount = QLabel('')
         bottomRow.addWidget(self.lblCount)
         bottomRow.addSpacing(12)
@@ -444,13 +454,6 @@ class CompartmentCompassWindow(QWidget):
         )
         self.lblLegendJoin.setVisible(False)
         bottomRow.addWidget(self.lblLegendJoin)
-        bottomRow.addSpacing(12)
-        self.filterProgressBar = QProgressBar()
-        self.filterProgressBar.setFixedHeight(14)
-        self.filterProgressBar.setMaximumWidth(120)
-        self.filterProgressBar.setTextVisible(False)
-        self.filterProgressBar.hide()
-        bottomRow.addWidget(self.filterProgressBar)
         bottomRow.addStretch(1)
         self.btnEditMode = QPushButton(self.tr('Edit'))
         self.btnEditMode.setCheckable(True)
@@ -478,7 +481,12 @@ class CompartmentCompassWindow(QWidget):
         self._refresh_layer_combo()
         self._update_language_button()
         # Info/Settingタブ構築後でないとコンテナが無いため、ここで初期状態を反映する。
+        was_blocked = self.btnShowAllFields.blockSignals(True)
         self.btnShowAllFields.setChecked(self._saved_show_all_fields)
+        self.btnShowAllFields.blockSignals(was_blocked)
+        self._apply_show_all_fields_state(
+            self.btnShowAllFields.isChecked(), save=False
+        )
 
     # -- filterTbl/tblを1つの表として矢印キーで行き来する -------------------
 
@@ -511,6 +519,8 @@ class CompartmentCompassWindow(QWidget):
         return 0 if self._filterProxy.rowCount() > 0 else -1
 
     def _focus_table_first_row(self):
+        if self._tableModel is None and not self._ensure_table_loaded():
+            return
         row = self._first_visible_row()
         if row < 0:
             return
@@ -694,6 +704,7 @@ class CompartmentCompassWindow(QWidget):
     def cleanup(self):
         self._cellTipTimer.stop()
         self._cellTipLabel.hide()
+        self._release_table_model()
         self._disconnect_selection_signal(self._currentLayer)
         self._restore_selection_color()
         try:
@@ -705,6 +716,14 @@ class CompartmentCompassWindow(QWidget):
             )
         except TypeError:
             pass
+
+    def _release_table_model(self):
+        # The proxy/view can keep C++ pointers to the source model. Detach it
+        # before dropping Python references, otherwise rebuilding the table can
+        # leave Qt touching a deleted QgsAttributeTableModel.
+        self._filterProxy.setSourceModel(None)
+        self._tableModel = None
+        self._layerCache = None
 
     # -- レイヤー一覧・テーブル --------------------------------------------
 
@@ -747,7 +766,12 @@ class CompartmentCompassWindow(QWidget):
         self._update_layer_type_label(layer)
         QApplication.processEvents()
         self._reset_column_config(layer)
-        self._populate_table(layer)
+        if _DEFER_TABLE_LOAD_ON_LAYER_SELECT and layer is not None:
+            self._reset_filter_state()
+            self._release_table_model()
+            self._apply_table_column_layout(layer, reset_filters=False)
+        else:
+            self._populate_table(layer)
         self._refresh_setting_combos(layer)
         if layer is not None:
             self._apply_selection_color(layer)
@@ -892,6 +916,20 @@ class CompartmentCompassWindow(QWidget):
     def _on_filter_selection_changed(self):
         if self._syncing_selection:
             return
+        current_col = self.filterTbl.currentColumn()
+        current_name = ''
+        if current_col >= 0:
+            header_item = self.filterTbl.horizontalHeaderItem(current_col)
+            current_name = header_item.text() if header_item is not None else ''
+        if self._tableModel is None and self._ensure_table_loaded():
+            if current_name in self._displayedFieldNames:
+                self._syncing_selection = True
+                try:
+                    self.filterTbl.setCurrentCell(
+                        0, self._displayedFieldNames.index(current_name)
+                    )
+                finally:
+                    self._syncing_selection = False
         # 検索行(filterTbl)をクリックした場合も、逆方向として下テーブル側の
         # ハイライトを解除する。clearSelection()だけだとcurrentIndexが残り、
         # 非アクティブ状態の薄い塗りとして見えてしまう＋Infoタブが古い地物の
@@ -1160,24 +1198,50 @@ class CompartmentCompassWindow(QWidget):
         frame = 2 * self.filterTbl.frameWidth()
         self.filterTbl.setFixedHeight(header_h + row_h + frame)
 
-    def _populate_table(self, layer):
-        previous_syncing = self._syncing_selection
-        self._syncing_selection = True
+    def _reset_filter_state(self):
+        self._filterIsNumeric = []
+        self._filterProxy.set_matching_fids(None)
+        self._pendingFilters = {}
+        self._activeFilters = {}
+        self._prevActiveFilters = {}
+        self._prevMatchedFids = None
+        self._filterDebounceTimer.stop()
+
+    def _ordered_layer_fields(self, layer):
+        # 表示順: 表示 → 情報（後列） → 非表示（非表示列は末尾でよい、どうせ隠れる）
+        _order = {COLUMN_DISPLAY: 0, COLUMN_INFO: 1, COLUMN_HIDDEN: 2}
+        return sorted(
+            layer.fields(),
+            key=lambda f: _order.get(self._column_config.get(f.name()), 0),
+        )
+
+    def _apply_table_column_layout(self, layer, reset_filters=True):
+        if reset_filters:
+            self._reset_filter_state()
+
+        previous_populating = self._populatingTable
+        filter_updates_enabled = self.filterTbl.updatesEnabled()
+        table_updates_enabled = self.tbl.updatesEnabled()
+        filter_header = self.filterTbl.horizontalHeader()
+        table_header = self.tbl.horizontalHeader()
+        filter_header_updates_enabled = filter_header.updatesEnabled()
+        table_header_updates_enabled = table_header.updatesEnabled()
+        filter_signals_blocked = False
+        filter_header_signals_blocked = False
+        table_header_signals_blocked = False
         self._populatingTable = True
+        self.filterTbl.setUpdatesEnabled(False)
+        self.tbl.setUpdatesEnabled(False)
+        filter_header.setUpdatesEnabled(False)
+        table_header.setUpdatesEnabled(False)
+        if _SUPPRESS_TABLE_LAYOUT_SIGNALS:
+            filter_signals_blocked = self.filterTbl.blockSignals(True)
+            filter_header_signals_blocked = filter_header.blockSignals(True)
+            table_header_signals_blocked = table_header.blockSignals(True)
         try:
             self.filterTbl.clear()
             self.filterTbl.setRowCount(1)
-            self._filterIsNumeric = []
-            self._filterProxy.set_matching_fids(None)
-            self._pendingFilters = {}
-            self._activeFilters = {}
-            self._prevActiveFilters = {}
-            self._prevMatchedFids = None
-            self._filterDebounceTimer.stop()
-            self._layerCache = None
-            self._tableModel = None
             if layer is None:
-                self._filterProxy.setSourceModel(None)
                 self.filterTbl.setColumnCount(0)
                 self.lblCount.setText('')
                 self._displayedFieldNames = []
@@ -1186,37 +1250,23 @@ class CompartmentCompassWindow(QWidget):
                 self.lblLegendJoin.setVisible(False)
                 return
 
-            # 表示順: 表示 → 情報（後列） → 非表示（非表示列は末尾でよい、どうせ隠れる）
-            _order = {COLUMN_DISPLAY: 0, COLUMN_INFO: 1, COLUMN_HIDDEN: 2}
-            ordered_fields = sorted(
-                layer.fields(),
-                key=lambda f: _order.get(self._column_config.get(f.name()), 0),
-            )
+            ordered_fields = self._ordered_layer_fields(layer)
             headers = [field.name() for field in ordered_fields]
             self._displayedFieldNames = headers
-
-            # 大規模レイヤーでも表示に必要な行だけ遅延取得される
-            # QgsVectorLayerCache+QgsAttributeTableModel（QGIS標準の属性テーブルと
-            # 同じ仕組み）を使う。全フィーチャーの即時ウィジェット化はしない。
-            # loadLayer()自体は進捗を取得できないため、不定形（busy）表示にする。
-            self.filterProgressBar.setRange(0, 0)
-            self.filterProgressBar.show()
-            QApplication.processEvents()
-            self._layerCache = QgsVectorLayerCache(layer, _LAYER_CACHE_SIZE)
-            self._tableModel = QgsAttributeTableModel(self._layerCache)
-            self._tableModel.loadLayer()
-            self._filterProxy.setSourceModel(self._tableModel)
-            self.filterProgressBar.hide()
-            self.filterProgressBar.setRange(0, 1)
-
-            self._modelColumnOrder = [
-                self._tableModel.fieldCol(layer.fields().indexFromName(name))
-                for name in headers
-            ]
-            self._modelColToFieldIndex = {
-                self._tableModel.fieldCol(i): i
-                for i in range(len(layer.fields()))
-            }
+            if self._tableModel is None:
+                self._modelColumnOrder = []
+                self._modelColToFieldIndex = {}
+            else:
+                self._modelColumnOrder = [
+                    self._tableModel.fieldCol(
+                        layer.fields().indexFromName(name)
+                    )
+                    for name in headers
+                ]
+                self._modelColToFieldIndex = {
+                    self._tableModel.fieldCol(i): i
+                    for i in range(len(layer.fields()))
+                }
 
             # 結合(join)由来の列は、GPKGレイヤーに結合されていても書き込み先は
             # 結合元（CSV/Excel等）であり、GPKG本体とは別物のため編集不可にする。
@@ -1226,11 +1276,14 @@ class CompartmentCompassWindow(QWidget):
                 if layer_fields.fieldOrigin(layer_fields.indexFromName(name))
                 == Qgis.FieldOrigin.Join
             }
-            self._filterProxy.set_readonly_columns(
-                self._modelColumnOrder[i]
-                for i, name in enumerate(headers)
-                if name in joined_names
-            )
+            if self._tableModel is None:
+                self._filterProxy.set_readonly_columns([])
+            else:
+                self._filterProxy.set_readonly_columns(
+                    self._modelColumnOrder[i]
+                    for i, name in enumerate(headers)
+                    if name in joined_names
+                )
             self._update_join_legend(layer, bool(joined_names))
 
             self.filterTbl.setColumnCount(len(headers))
@@ -1251,25 +1304,30 @@ class CompartmentCompassWindow(QWidget):
                 self.filterTbl.setItem(0, col, item)
                 self._filterIsNumeric.append(field.isNumeric())
 
-            # tbl側の見た目の列順・表示/非表示をfilterTblの表示順(ordered_fields)に
-            # 合わせる。モデル自体の列順はlayer.fields()固定なので、ヘッダーの
-            # 視覚的な並べ替え(moveSection)で実現する。
-            header = self.tbl.horizontalHeader()
-            for visual_pos, model_col in enumerate(self._modelColumnOrder):
-                current_visual = header.visualIndex(model_col)
-                if current_visual != visual_pos:
-                    header.moveSection(current_visual, visual_pos)
-            for visual_pos, name in enumerate(headers):
-                model_col = self._modelColumnOrder[visual_pos]
-                hidden = self._column_config.get(name) == COLUMN_HIDDEN
-                self.tbl.setColumnHidden(model_col, hidden)
-                self.filterTbl.setColumnHidden(visual_pos, hidden)
+            if self._tableModel is not None:
+                # tbl側の見た目の列順・表示/非表示をfilterTblの表示順(ordered_fields)に
+                # 合わせる。モデル自体の列順はlayer.fields()固定なので、ヘッダーの
+                # 視覚的な並べ替え(moveSection)で実現する。
+                header = self.tbl.horizontalHeader()
+                for visual_pos, model_col in enumerate(self._modelColumnOrder):
+                    current_visual = header.visualIndex(model_col)
+                    if current_visual != visual_pos:
+                        header.moveSection(current_visual, visual_pos)
+                for visual_pos, name in enumerate(headers):
+                    model_col = self._modelColumnOrder[visual_pos]
+                    hidden = self._column_config.get(name) == COLUMN_HIDDEN
+                    self.tbl.setColumnHidden(model_col, hidden)
+                    self.filterTbl.setColumnHidden(visual_pos, hidden)
 
-            # 列幅をtbl側にも反映する（filterTbl側のヘッダーを基準とする）
-            for visual_pos, model_col in enumerate(self._modelColumnOrder):
-                self.tbl.setColumnWidth(
-                    model_col, self.filterTbl.columnWidth(visual_pos)
-                )
+                # 列幅をtbl側にも反映する（filterTbl側のヘッダーを基準とする）
+                for visual_pos, model_col in enumerate(self._modelColumnOrder):
+                    self.tbl.setColumnWidth(
+                        model_col, self.filterTbl.columnWidth(visual_pos)
+                    )
+            else:
+                for visual_pos, name in enumerate(headers):
+                    hidden = self._column_config.get(name) == COLUMN_HIDDEN
+                    self.filterTbl.setColumnHidden(visual_pos, hidden)
 
             # 縦見出しはtbl側の行番号ガター幅に合わせて確保する。
             # ラベルは行番号の代わりに絞り込み行であることを示すマークを表示する。
@@ -1280,9 +1338,90 @@ class CompartmentCompassWindow(QWidget):
 
             self._fit_filter_table_height()
             self._sync_filter_viewport_margin()
-            self.lblCount.setText(
-                self.tr('{0} features').format(self._filterProxy.rowCount())
+            row_count = (
+                self._filterProxy.rowCount()
+                if self._tableModel is not None
+                else layer.featureCount()
             )
+            self.lblCount.setText(
+                self.tr('{0} features').format(row_count)
+            )
+        finally:
+            if _SUPPRESS_TABLE_LAYOUT_SIGNALS:
+                table_header.blockSignals(table_header_signals_blocked)
+                filter_header.blockSignals(filter_header_signals_blocked)
+                self.filterTbl.blockSignals(filter_signals_blocked)
+            table_header.setUpdatesEnabled(table_header_updates_enabled)
+            filter_header.setUpdatesEnabled(filter_header_updates_enabled)
+            self.tbl.setUpdatesEnabled(table_updates_enabled)
+            self.filterTbl.setUpdatesEnabled(filter_updates_enabled)
+            self._populatingTable = previous_populating
+
+    def _filter_texts_by_name(self):
+        texts = {}
+        for col in range(self.filterTbl.columnCount()):
+            header_item = self.filterTbl.horizontalHeaderItem(col)
+            item = self.filterTbl.item(0, col)
+            if header_item is not None and item is not None:
+                texts[header_item.text()] = item.text()
+        return texts
+
+    def _restore_filter_texts_by_name(self, texts):
+        if not texts:
+            return
+        previous_populating = self._populatingTable
+        self._populatingTable = True
+        try:
+            for col, field_name in enumerate(self._displayedFieldNames):
+                item = self.filterTbl.item(0, col)
+                if item is not None:
+                    item.setText(texts.get(field_name, ''))
+        finally:
+            self._populatingTable = previous_populating
+
+    def _ensure_table_loaded(self):
+        if self._tableModel is not None:
+            return True
+        layer = self._currentLayer
+        if layer is None:
+            return False
+        filter_texts = self._filter_texts_by_name()
+        self._populate_table(layer)
+        self._restore_filter_texts_by_name(filter_texts)
+        return self._tableModel is not None
+
+    def _populate_table(self, layer):
+        previous_syncing = self._syncing_selection
+        self._syncing_selection = True
+        self._populatingTable = True
+        try:
+            self._reset_filter_state()
+            self._release_table_model()
+            if layer is None:
+                self._apply_table_column_layout(layer, reset_filters=False)
+                return
+
+            # loadLayer()中はUI更新が止まるため、先に列名・検索行・件数だけ描画して
+            # 「対象レイヤーを認識済みで、これからデータ行を読む」段階を見せる。
+            self._apply_table_column_layout(layer, reset_filters=False)
+            QApplication.processEvents()
+
+            # 大規模レイヤーでも表示に必要な行だけ遅延取得される
+            # QgsVectorLayerCache+QgsAttributeTableModel（QGIS標準の属性テーブルと
+            # 同じ仕組み）を使う。全フィーチャーの即時ウィジェット化はしない。
+            # loadLayer()自体は進捗を取得できないため、不定形（busy）表示にする。
+            self.filterProgressBar.setRange(0, 0)
+            self.filterProgressBar.show()
+            QApplication.processEvents()
+            self._layerCache = QgsVectorLayerCache(layer, _LAYER_CACHE_SIZE)
+            self._layerCache.setCacheGeometry(False)
+            self._tableModel = QgsAttributeTableModel(self._layerCache)
+            self._tableModel.loadLayer()
+            self._filterProxy.setSourceModel(self._tableModel)
+            self.filterProgressBar.hide()
+            self.filterProgressBar.setRange(0, 1)
+
+            self._apply_table_column_layout(layer, reset_filters=False)
         finally:
             self.filterProgressBar.hide()
             self.filterProgressBar.setRange(0, 1)
@@ -1293,7 +1432,19 @@ class CompartmentCompassWindow(QWidget):
         if self._populatingTable:
             return
         visual_col = item.column()
+        header_item = self.filterTbl.horizontalHeaderItem(visual_col)
+        field_name = header_item.text() if header_item is not None else ''
+        if self._tableModel is None:
+            if not self._ensure_table_loaded():
+                return
+            if field_name in self._displayedFieldNames:
+                visual_col = self._displayedFieldNames.index(field_name)
+            else:
+                return
         if visual_col >= len(self._modelColumnOrder):
+            return
+        item = self.filterTbl.item(0, visual_col)
+        if item is None:
             return
         self._pendingFilters[self._modelColumnOrder[visual_col]] = (
             item.text(),
@@ -1331,9 +1482,16 @@ class CompartmentCompassWindow(QWidget):
             field_index = self._modelColToFieldIndex.get(model_col)
             if field_index is None:
                 continue
-            use_numeric = is_numeric or _looks_like_numeric_filter(text)
+            use_numeric = (
+                is_numeric or _looks_like_numeric_comparison_filter(text)
+            )
             checks.append((field_index, text, use_numeric))
             needed_indexes.append(field_index)
+        needed_indexes = sorted(set(needed_indexes))
+        if not checks:
+            self.filterProgressBar.hide()
+            self._filterProxy.set_matching_fids(None)
+            return
 
         # 直前の条件がすべて今回にも同じ値で残っている（＝条件を追加しただけ）なら、
         # 直前の一致fid集合を母集合として走査対象を絞り込める。条件の変更・削除は
@@ -1536,7 +1694,7 @@ class CompartmentCompassWindow(QWidget):
             else:
                 valueLabel.setText('')
 
-    def _on_show_all_fields_toggled(self, checked):
+    def _apply_show_all_fields_state(self, checked, save=True):
         self._showAllFields = checked
         self.infoConfiguredContainer.setVisible(not checked)
         self.infoAllFieldsContainer.setVisible(checked)
@@ -1546,7 +1704,11 @@ class CompartmentCompassWindow(QWidget):
             else self.tr('All info mode OFF')
         )
         self._update_info_tab()
-        self._save_state()
+        if save:
+            self._save_state()
+
+    def _on_show_all_fields_toggled(self, checked):
+        self._apply_show_all_fields_state(checked)
 
     def _populate_all_fields(self, feature):
         # レイヤーごとにフィールド数が違うため、切替・地物変更のたびに作り直す。
@@ -1641,7 +1803,12 @@ class CompartmentCompassWindow(QWidget):
         dialog = ColumnConfigDialog(field_names, self._column_config, self)
         if dialog.exec() == ColumnConfigDialog.DialogCode.Accepted:
             self._column_config = dialog.get_config()
-            self._populate_table(layer)
+            previous_syncing = self._syncing_selection
+            self._syncing_selection = True
+            try:
+                self._apply_table_column_layout(layer)
+            finally:
+                self._syncing_selection = previous_syncing
             self._sync_table_selection_from_layer()
             self._refresh_setting_combos(layer)
             self._save_state()
