@@ -24,7 +24,7 @@ Attribute editing works best when you can cross-check visual location and attrib
 - **Column modes**: set each column to shown / info (pinned at the end of the table, in orange) / hidden
 - **Info tab**: shows your chosen fields (label: value) plus the QGIS-assigned ID (feature.id()) for individual identification. All fields are shown by default; narrowing the shown fields can reduce selection and rendering load
 - **GeoPackage editing**: edit cells directly in the table, but only for GeoPackage-format layers
-- Works with any vector layer already loaded in the project — not limited to forest data
+- Works with any vector layer already loaded in the project
 
 ### Filter syntax
 
@@ -125,7 +125,7 @@ This plugin was created to improve workflow efficiency. The author is not respon
 - **Info タブ**: 任意に選んだフィールド（label: value形式）に加え、個体識別用にQGISが割り振るID（feature.id()）を表示
   デフォルトで全件表示しています。表示項目を絞ることで選択操作/描画負担を軽減できます。
 - **GeoPackage編集**: GeoPackage形式のレイヤーに限り、テーブルのセルを直接編集できる
-- プロジェクトに読み込み済みの任意のベクタレイヤーに使える（森林データ限定ではない）
+- プロジェクトに読み込み済みの任意のベクタレイヤーに使える
 
 ### 絞り込み構文
 
