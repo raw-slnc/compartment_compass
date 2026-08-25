@@ -69,7 +69,7 @@ class CompartmentCompass:
 
     def initGui(self):
         self.set_language(None)
-        icon_path = os.path.join(self.plugin_dir, 'icon.png')
+        icon_path = os.path.join(self.plugin_dir, 'icon.svg')
         action = QAction(
             QIcon(icon_path), self.tr('Compartment Compass'), self.iface.mainWindow()
         )

@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
+  <defs>
+    <filter id="shadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="2" flood-opacity="0.18"/>
+    </filter>
+  </defs>
+
+  <g transform="matrix(1.142857 0 0 1.142857 -9.142857 -9.142857)">
+  <!-- background tile -->
+  <rect x="8" y="8" width="112" height="112" rx="22" fill="#F4F7F3"/>
+
+  <!-- map panel -->
+  <rect x="18" y="18" width="92" height="58" rx="10" fill="#DCE8D9" stroke="#456B52" stroke-width="4" filter="url(#shadow)"/>
+
+  <!-- parcel / forest planning polygons -->
+  <path d="M24 24 L48 22 L55 39 L39 51 L23 43 Z" fill="#B7CDAF" stroke="#5C7E61" stroke-width="2"/>
+  <path d="M50 22 L77 24 L74 44 L57 39 Z" fill="#A9C59F" stroke="#5C7E61" stroke-width="2"/>
+  <path d="M77 24 L104 29 L102 50 L74 44 Z" fill="#C6D7B9" stroke="#5C7E61" stroke-width="2"/>
+  <path d="M23 43 L39 51 L35 69 L21 64 Z" fill="#CADCBC" stroke="#5C7E61" stroke-width="2"/>
+  <path d="M39 51 L74 44 L81 69 L35 69 Z" fill="#B5CEA9" stroke="#5C7E61" stroke-width="2"/>
+  <path d="M74 44 L102 50 L106 68 L81 69 Z" fill="#AFC9A5" stroke="#5C7E61" stroke-width="2"/>
+
+  <!-- selected feature -->
+  <path d="M39 51 L74 44 L81 69 L35 69 Z" fill="#E7B84B" fill-opacity="0.92" stroke="#A66A00" stroke-width="3"/>
+
+  <!-- table -->
+  <rect x="26" y="60" width="84" height="52" rx="8" fill="#FFFFFF" stroke="#33443A" stroke-width="4" filter="url(#shadow)"/>
+
+  <!-- header -->
+  <path d="M30 64 H106 V76 H30 Z" fill="#496E56"/>
+
+  <!-- grid lines -->
+  <path d="M30 88 H106 M30 100 H106
+           M54 64 V108 M82 64 V108"
+        stroke="#8A9A90" stroke-width="2"/>
+
+  <!-- header marks -->
+  <rect x="34" y="68" width="14" height="4" rx="2" fill="#FFFFFF"/>
+  <rect x="59" y="68" width="16" height="4" rx="2" fill="#FFFFFF"/>
+  <rect x="87" y="68" width="13" height="4" rx="2" fill="#FFFFFF"/>
+
+  <!-- active row -->
+  <rect x="30" y="77" width="76" height="10" fill="#F6D77B"/>
+
+  <!-- search magnifier -->
+  <circle cx="101" cy="94" r="12" fill="#FFFFFF" stroke="#2D5D46" stroke-width="4"/>
+  <path d="M109 102 L117 110" stroke="#2D5D46" stroke-width="5" stroke-linecap="round"/>
+  <circle cx="101" cy="94" r="5" fill="none" stroke="#2D5D46" stroke-width="3"/>
+  </g>
+</svg>
