@@ -20,11 +20,11 @@ Attribute editing works best when you can cross-check visual location and attrib
 ### Features
 
 - **Spreadsheet-style filter row**: a per-column search row above the table — filter on any column, text or numeric
-- **Table-map sync**: moving through the table highlights and zooms to the matching feature on the map; hovering a cell shows its value as a popup
+- **Table-map sync**: moving through the table highlights and zooms to the matching feature on the map; the selected cell's value is shown as a popup
 - **Column modes**: set each column to shown / info (pinned at the end of the table, in orange) / hidden
-- **Info tab**: shows your chosen fields (label: value) plus the QGIS-assigned ID (feature.id()) for individual identification
+- **Info tab**: shows your chosen fields (label: value) plus the QGIS-assigned ID (feature.id()) for individual identification. All fields are shown by default; narrowing the shown fields can reduce selection and rendering load
 - **GeoPackage editing**: edit cells directly in the table, but only for GeoPackage-format layers
-- Works with any vector layer already loaded in the project — not limited to forest data, and does not download or install data itself
+- Works with any vector layer already loaded in the project — not limited to forest data
 
 ### Filter syntax
 
@@ -56,7 +56,7 @@ The same examples are also available (and copyable) in the panel's "Tips" tab.
 
 The edit-mode button at the bottom right of the table lets you edit attribute values directly, but only for GeoPackage-format layers — the button is disabled for Shapefiles and other formats. Edits go through a normal QGIS edit session (start → commit/rollback), writing directly to the layer. Leaving edit mode with unsaved changes shows a save/discard/cancel confirmation dialog.
 
-Unlike gpkg_editor, there is no "plan" management or non-destructive editing (keeping edits as a diff without touching the source data) — if you need to compare multiple editing scenarios side by side, gpkg_editor is the better fit.
+Unlike gpkg_editor, there is no "plan" management or non-destructive editing (keeping edits as a diff without touching the source data) — if you need to compare multiple editing scenarios side by side, gpkg_editor is the better fit. https://github.com/raw-slnc/gpkg_editor
 
 The Info tab's "QGIS internal ID" is the QGIS-assigned feature.id() — useful for pointing at a specific row, but note this is an internal, session-local number, not a persistent business key like a GPKG fid.
 
@@ -65,7 +65,6 @@ The Info tab's "QGIS internal ID" is the QGIS-assigned feature.id() — useful f
 - Attribute editing works only on GeoPackage layers. Shapefiles etc. are view/search only.
 - No "plan" management or non-destructive editing like gpkg_editor — edits write directly to the layer through a normal QGIS edit session.
 - No feature add/delete — only editing existing features' attribute values.
-- No data download/installation feature. Load the data into QGIS yourself first.
 
 ### Requirements
 
@@ -121,11 +120,12 @@ This plugin was created to improve workflow efficiency. The author is not respon
 ### 主な機能
 
 - **スプレッドシート風の絞り込み行**: テーブル上部の検索行で、任意の列（テキスト・数値）を対象に絞り込める
-- **テーブルと地図の連動**: テーブル上を移動するたびに、対応する地物が地図上でハイライト・ズームされる。セルにカーソルを合わせるとその値をポップアップ表示
+- **テーブルと地図の連動**: テーブル上を移動するたびに、対応する地物が地図上でハイライト・ズームされ、選択されたセルの値をポップアップ表示します。
 - **列の表示モード**: 列ごとに「表示／情報（末尾に橙色で固定表示）／非表示」を設定できる
 - **Info タブ**: 任意に選んだフィールド（label: value形式）に加え、個体識別用にQGISが割り振るID（feature.id()）を表示
+  デフォルトで全件表示しています。表示項目を絞ることで選択操作/描画負担を軽減できます。
 - **GeoPackage編集**: GeoPackage形式のレイヤーに限り、テーブルのセルを直接編集できる
-- プロジェクトに読み込み済みの任意のベクタレイヤーに使える（森林データ限定ではない）。データの自動ダウンロード・設置は行わない
+- プロジェクトに読み込み済みの任意のベクタレイヤーに使える（森林データ限定ではない）
 
 ### 絞り込み構文
 
@@ -157,7 +157,7 @@ This plugin was created to improve workflow efficiency. The author is not respon
 
 テーブル右下の編集モードボタンで属性値をその場で編集できますが、GeoPackage形式のレイヤーに限ります——Shapefile等では無効化されます。編集は通常のQGIS編集セッション（開始→コミット/ロールバック）による直接書き込みです。編集モードを終了する際、未保存の変更があれば保存・破棄・キャンセルを選ぶ確認ダイアログが表示されます。
 
-gpkg_editorと異なり、「計画（プラン）管理」や「非破壊編集（元データを変更せず差分だけ保持）」の仕組みは持ちません。複数の編集案を比較しながら検討したい場合は、gpkg_editorの利用を検討してください。
+gpkg_editorと異なり、「計画（プラン）管理」や「非破壊編集（元データを変更せず差分だけ保持）」の仕組みは持ちません。複数の編集案を比較しながら検討したい場合は、gpkg_editorの利用を検討してください。https://github.com/raw-slnc/gpkg_editor
 
 Info タブの「QGIS internal ID」はQGISが割り振るfeature.id()です。特定の行を指し示すのに便利ですが、GPKGのfidのような永続的な業務キーではなく、あくまでQGIS内部・セッション限りの番号である点に注意してください。
 
@@ -166,7 +166,6 @@ Info タブの「QGIS internal ID」はQGISが割り振るfeature.id()です。�
 - 属性編集はGeoPackageレイヤーのみです。Shapefile等は表示・検索のみで編集はできません。
 - gpkg_editorのような「計画（プラン）管理」「非破壊編集」の仕組みは持ちません。編集は通常のQGIS編集セッションによる直接書き込みです。
 - フィーチャーの追加・削除には対応していません（既存フィーチャーの属性値編集のみ）。
-- データの自動ダウンロード・設置機能はありません。QGISへの読み込みは事前に済ませてください。
 
 ### 動作環境
 
