@@ -5,6 +5,10 @@ A QGIS plugin that lets you filter, search, and — for GeoPackage layers — ed
 ![QGIS](https://img.shields.io/badge/QGIS-4.0%2B-green)
 ![Version](https://img.shields.io/badge/version-0.1.0-blue)
 
+![Screenshot](use_compartment_compass.png)
+
+*Background map tiles: [国土地理院 (GSI, Geospatial Information Authority of Japan)](https://maps.gsi.go.jp/development/ichiran.html). Not bundled with the plugin — shown here only as the background layer already loaded in the project.*
+
 [日本語はこちら](#日本語)
 
 ---

@@ -5,7 +5,10 @@ from qgis.PyQt.QtCore import QCoreApplication, QSettings, Qt, QTranslator
 from qgis.PyQt.QtGui import QIcon
 from qgis.PyQt.QtWidgets import QAction, QDialog, QDockWidget, QVBoxLayout
 
-from .panel_widget import CompartmentCompassDockWidget, CompartmentCompassWindow
+from .panel_widget import (
+    CompartmentCompassDockWidget,
+    CompartmentCompassWindow,
+)
 
 
 class CompartmentCompass:
@@ -71,7 +74,9 @@ class CompartmentCompass:
         self.set_language(None)
         icon_path = os.path.join(self.plugin_dir, 'icon.svg')
         action = QAction(
-            QIcon(icon_path), self.tr('Compartment Compass'), self.iface.mainWindow()
+            QIcon(icon_path),
+            self.tr('Compartment Compass'),
+            self.iface.mainWindow(),
         )
         action.triggered.connect(self.run)
         self.iface.addVectorToolBarIcon(action)
@@ -124,7 +129,9 @@ class CompartmentCompass:
             QDockWidget.DockWidgetFeature.DockWidgetClosable
             | QDockWidget.DockWidgetFeature.DockWidgetMovable
         )
-        self.iface.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, self.dock)
+        self.iface.addDockWidget(
+            Qt.DockWidgetArea.BottomDockWidgetArea, self.dock
+        )
 
     def _create_dialog(self):
         if self.dialog is not None:
@@ -138,7 +145,9 @@ class CompartmentCompass:
         layout.addWidget(self.window)
         self.window.attach_window_dialog(self.dialog)
         self.window.show()
-        geometry = QSettings().value('compartment_compass/window_geometry', None)
+        geometry = QSettings().value(
+            'compartment_compass/window_geometry', None
+        )
         if geometry:
             self.dialog.restoreGeometry(geometry)
         else:
@@ -148,7 +157,8 @@ class CompartmentCompass:
     def _save_dialog_geometry(self):
         if self.dialog is not None:
             QSettings().setValue(
-                'compartment_compass/window_geometry', self.dialog.saveGeometry()
+                'compartment_compass/window_geometry',
+                self.dialog.saveGeometry(),
             )
 
     def _set_window_mode(self, enabled):

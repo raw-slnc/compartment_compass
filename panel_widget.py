@@ -17,13 +17,12 @@ from qgis.PyQt.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDockWidget,
+    QFrame,
     QGridLayout,
     QGroupBox,
     QHBoxLayout,
     QLabel,
-    QLineEdit,
     QMessageBox,
-    QFrame,
     QPushButton,
     QScrollArea,
     QSplitter,
@@ -82,8 +81,6 @@ def _iter_layer_tree_layers(node):
 
 INFO_FIELD_COUNT = 10
 
-# UIのソース言語はenglish。ja訳（i18n/compartment_compass_ja.qm）が揃うまでは
-# jaを選んでもenglishのまま表示される。
 LANGUAGE_CYCLE = ['en', 'ja']
 LANGUAGE_LABELS = {'en': 'English', 'ja': '日本語'}
 
@@ -190,7 +187,9 @@ class _ColumnFilterProxyModel(QSortFilterProxyModel):
             return False
         ok = layer.changeAttributeValue(fid, field_index, value)
         if ok:
-            self.dataChanged.emit(index, index, [role, Qt.ItemDataRole.DisplayRole])
+            self.dataChanged.emit(
+                index, index, [role, Qt.ItemDataRole.DisplayRole]
+            )
         return ok
 
 
@@ -216,7 +215,8 @@ class CompartmentCompassWindow(QWidget):
         self._column_config = {}
         self._currentLayer = None
         self._filterIsNumeric = []  # 列ごとのis_numeric（filterTbl列に対応）
-        self._settingGroups = []  # retranslate_ui用: (group, title, [labels], clear_btn)
+        # retranslate_ui用: (group, title, [labels], clear_btn)
+        self._settingGroups = []
         self._syncing_selection = False
         self._sel_color_layer_id = None
         self._sel_color_orig = None
@@ -242,7 +242,9 @@ class CompartmentCompassWindow(QWidget):
         # 自動で消えてしまうため使わない。表示位置とマウス位置が無関係なこの用途では
         # 自前のラベルで表示時間を完全にコントロールする）。
         self._cellTipLabel = QLabel(None, Qt.WindowType.ToolTip)
-        self._cellTipLabel.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+        self._cellTipLabel.setAttribute(
+            Qt.WidgetAttribute.WA_ShowWithoutActivating
+        )
         self._cellTipLabel.setStyleSheet(
             'QLabel { background-color: #ffffdc; color: #000000; '
             'border: 1px solid #767676; padding: 2px 4px; }'
@@ -256,6 +258,10 @@ class CompartmentCompassWindow(QWidget):
 
         top = QHBoxLayout()
         top.addStretch(1)
+        self.chkDisableZoom = QCheckBox(self.tr('Disable zoom on selection'))
+        self.chkDisableZoom.setChecked(self._saved_disable_zoom)
+        self.chkDisableZoom.toggled.connect(self._save_state)
+        top.addWidget(self.chkDisableZoom)
         self.chkWindowMode = QCheckBox(self.tr('Separate window'))
         top.addWidget(self.chkWindowMode)
         root.addLayout(top)
@@ -311,7 +317,9 @@ class CompartmentCompassWindow(QWidget):
         # 通常の編集可能セル）で行う。
         self.filterTbl = QTableWidget()
         self.filterTbl.setRowCount(1)
-        self.filterTbl.setVerticalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.filterTbl.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAlwaysOff
+        )
         self.filterTbl.setHorizontalScrollBarPolicy(
             Qt.ScrollBarPolicy.ScrollBarAlwaysOff
         )
@@ -327,7 +335,9 @@ class CompartmentCompassWindow(QWidget):
         self._filterTblSpacer = QWidget()
         # プレーンなQWidgetはこの属性がないとスタイルシートのbackground-color/
         # borderを描画しない（QFrame系は既定で描画するが素のQWidgetは対象外）。
-        self._filterTblSpacer.setAttribute(Qt.WidgetAttribute.WA_StyledBackground, True)
+        self._filterTblSpacer.setAttribute(
+            Qt.WidgetAttribute.WA_StyledBackground, True
+        )
         self._filterTblSpacer.setFixedWidth(0)
         filterRow = QHBoxLayout()
         filterRow.setContentsMargins(0, 0, 0, 0)
@@ -346,11 +356,17 @@ class CompartmentCompassWindow(QWidget):
         self.tbl.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)
         # ハイライトはクリックしたセル単体のみ表示する（選択対象の特定は内部的には
         # 行単位で扱う。FeatureIdRoleでどの列のインデックスからでもfidが取れる）。
-        self.tbl.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectItems)
-        self.tbl.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
+        self.tbl.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectItems
+        )
+        self.tbl.setSelectionMode(
+            QAbstractItemView.SelectionMode.ExtendedSelection
+        )
         self.tbl.horizontalHeader().hide()
         tbl_palette = self.tbl.palette()
-        tbl_palette.setColor(QPalette.ColorRole.AlternateBase, QColor('#e9ecf1'))
+        tbl_palette.setColor(
+            QPalette.ColorRole.AlternateBase, QColor('#e9ecf1')
+        )
         self.tbl.setPalette(tbl_palette)
         self.tbl.setAlternatingRowColors(True)
         rightLayout.addWidget(self.tbl, 1)
@@ -428,6 +444,8 @@ class CompartmentCompassWindow(QWidget):
 
         self._refresh_layer_combo()
         self._update_language_button()
+        # Info/Settingタブ構築後でないとコンテナが無いため、ここで初期状態を反映する。
+        self.btnShowAllFields.setChecked(self._saved_show_all_fields)
 
     # -- filterTbl/tblを1つの表として矢印キーで行き来する -------------------
 
@@ -546,6 +564,8 @@ class CompartmentCompassWindow(QWidget):
     def retranslate_ui(self):
         self._update_language_button()
         self.lblLayer.setText(self.tr('Layer:'))
+        self.infoFidNameLabel.setText(self.tr('QGIS internal ID:'))
+        self.chkDisableZoom.setText(self.tr('Disable zoom on selection'))
         self.chkWindowMode.setText(self.tr('Separate window'))
         self._leftTabs.setTabText(0, self.tr('Info'))
         self._leftTabs.setTabText(1, self.tr('Setting'))
@@ -554,10 +574,17 @@ class CompartmentCompassWindow(QWidget):
             self.cmbLayer.setItemText(0, self.tr('-- Select layer --'))
         self.lblLegendDisplay.setText(self.tr('■ Display'))
         self.lblLegendInfo.setText(self.tr('■ Info (trailing)'))
-        self._update_join_legend(self._currentLayer, self.lblLegendJoin.isVisible())
+        self._update_join_legend(
+            self._currentLayer, self.lblLegendJoin.isVisible()
+        )
         self._update_layer_type_label(self._currentLayer)
         self.btnEditMode.setText(self.tr('Edit'))
         self.btnShowAllFields.setText(self.tr('Show all fields'))
+        self.lblAllInfoMode.setText(
+            self.tr('All info mode ON')
+            if self._showAllFields
+            else self.tr('All info mode OFF')
+        )
         for group, title_key, labels, clear_btn in self._settingGroups:
             group.setTitle(self.tr(title_key))
             for i, label in enumerate(labels):
@@ -566,6 +593,23 @@ class CompartmentCompassWindow(QWidget):
                 clear_btn.setText(self.tr('Clear'))
         self.grpTableSetting.setTitle(self.tr('Table setting'))
         self.btnColumnConfig.setText(self.tr('Column config'))
+        self.tipsGroup.setTitle(self.tr('Tips'))
+        self.tipsRuleLabel.setText(self.tr(
+            'Text columns: substring match, case-insensitive.\n'
+            'Numeric columns: comma-separated comparisons '
+            '(>, >=, <, <=, ==, !=). No operator = exact match.'
+        ))
+        tips_explanations = [
+            self.tr('100 or more'),
+            self.tr('Less than 200'),
+            self.tr('100 or more, less than 200'),
+            self.tr('Not equal to 0'),
+            self.tr('Exactly 100'),
+        ]
+        for label, text in zip(self.tipsExplLabels, tips_explanations):
+            label.setText(text)
+        for btn in self.tipsCopyButtons:
+            btn.setText(self.tr('Copy'))
 
     # -- 状態の保存/復元（レイヤー単位ではなく直近の状態のみ） --------------
 
@@ -579,6 +623,12 @@ class CompartmentCompassWindow(QWidget):
         )
         self._saved_info_columns = set(
             settings.value('compartment_compass/info_columns', []) or []
+        )
+        self._saved_disable_zoom = settings.value(
+            'compartment_compass/disable_zoom', True, type=bool
+        )
+        self._saved_show_all_fields = settings.value(
+            'compartment_compass/show_all_fields', True, type=bool
         )
 
     def _save_state(self, *_args):
@@ -597,6 +647,13 @@ class CompartmentCompassWindow(QWidget):
             if state == COLUMN_INFO
         ]
         settings.setValue('compartment_compass/info_columns', info_columns)
+        settings.setValue(
+            'compartment_compass/disable_zoom', self.chkDisableZoom.isChecked()
+        )
+        settings.setValue(
+            'compartment_compass/show_all_fields',
+            self.btnShowAllFields.isChecked(),
+        )
 
     def cleanup(self):
         self._cellTipTimer.stop()
@@ -604,8 +661,12 @@ class CompartmentCompassWindow(QWidget):
         self._disconnect_selection_signal(self._currentLayer)
         self._restore_selection_color()
         try:
-            QgsProject.instance().layersAdded.disconnect(self._refresh_layer_combo)
-            QgsProject.instance().layersRemoved.disconnect(self._refresh_layer_combo)
+            QgsProject.instance().layersAdded.disconnect(
+                self._refresh_layer_combo
+            )
+            QgsProject.instance().layersRemoved.disconnect(
+                self._refresh_layer_combo
+            )
         except TypeError:
             pass
 
@@ -824,7 +885,9 @@ class CompartmentCompassWindow(QWidget):
         finally:
             self._syncing_selection = False
         self._refresh_layer_selection(layer)
-        self._zoom_to_selection(layer)
+        self._zoom_to_selection(
+            layer, pan_only=self.chkDisableZoom.isChecked()
+        )
         self._show_cell_tooltip(layer)
         self._update_info_tab()
 
@@ -837,15 +900,25 @@ class CompartmentCompassWindow(QWidget):
         if fid is None:
             return
 
-        feature = self._layerCache.getFeature(fid) if self._layerCache else None
-        if feature is None or not feature.isValid() or feature.geometry().isNull():
+        feature = (
+            self._layerCache.getFeature(fid) if self._layerCache else None
+        )
+        if (
+            feature is None
+            or not feature.isValid()
+            or feature.geometry().isNull()
+        ):
             return
         point = feature.geometry().centroid().asPoint()
 
         canvas = self.iface.mapCanvas()
         layer_crs = layer.crs()
         canvas_crs = canvas.mapSettings().destinationCrs()
-        if layer_crs.isValid() and canvas_crs.isValid() and layer_crs != canvas_crs:
+        if (
+            layer_crs.isValid()
+            and canvas_crs.isValid()
+            and layer_crs != canvas_crs
+        ):
             transform = QgsCoordinateTransform(
                 layer_crs, canvas_crs, QgsProject.instance()
             )
@@ -873,9 +946,10 @@ class CompartmentCompassWindow(QWidget):
 
         QTimer.singleShot(0, _show)
 
-    def _zoom_to_selection(self, layer):
+    def _zoom_to_selection(self, layer, pan_only=False):
         """選択フィーチャーへパン/ズームする。余白は上下/左右それぞれフィーチャー
         サイズの50%とし、大きい方の余白を四辺すべてに適用する（縦横比を保つため）。
+        pan_only=Trueの場合は拡大縮小を行わず、現在の縮尺のまま中心だけ合わせる。
         """
         if not layer.selectedFeatureIds():
             return
@@ -886,7 +960,11 @@ class CompartmentCompassWindow(QWidget):
         canvas = self.iface.mapCanvas()
         layer_crs = layer.crs()
         canvas_crs = canvas.mapSettings().destinationCrs()
-        if layer_crs.isValid() and canvas_crs.isValid() and layer_crs != canvas_crs:
+        if (
+            layer_crs.isValid()
+            and canvas_crs.isValid()
+            and layer_crs != canvas_crs
+        ):
             transform = QgsCoordinateTransform(
                 layer_crs, canvas_crs, QgsProject.instance()
             )
@@ -894,6 +972,11 @@ class CompartmentCompassWindow(QWidget):
                 bbox = transform.transformBoundingBox(bbox)
             except QgsCsException:
                 return
+
+        if pan_only:
+            canvas.setCenter(bbox.center())
+            canvas.refresh()
+            return
 
         margin = max(bbox.width(), bbox.height()) * _ZOOM_MARGIN_RATIO
         if margin <= 0:
@@ -977,9 +1060,13 @@ class CompartmentCompassWindow(QWidget):
         self.iface.mapCanvas().refresh()
 
     def _reset_column_config(self, layer):
-        field_names = [field.name() for field in layer.fields()] if layer else []
+        field_names = (
+            [field.name() for field in layer.fields()] if layer else []
+        )
         self._column_config = {
-            name: self._column_config.get(name, self._default_column_state(name))
+            name: self._column_config.get(
+                name, self._default_column_state(name)
+            )
             for name in field_names
         }
 
@@ -992,7 +1079,9 @@ class CompartmentCompassWindow(QWidget):
 
     def _sync_data_column_width(self, logical_index, _old_size, new_size):
         if logical_index < len(self._modelColumnOrder):
-            self.tbl.setColumnWidth(self._modelColumnOrder[logical_index], new_size)
+            self.tbl.setColumnWidth(
+                self._modelColumnOrder[logical_index], new_size
+            )
 
     def _sync_row_header_width(self):
         # tbl側の行番号は表示件数の桁数に応じて自動で幅が変わる（絞り込みで
@@ -1076,7 +1165,8 @@ class CompartmentCompassWindow(QWidget):
                 for name in headers
             ]
             self._modelColToFieldIndex = {
-                self._tableModel.fieldCol(i): i for i in range(len(layer.fields()))
+                self._tableModel.fieldCol(i): i
+                for i in range(len(layer.fields()))
             }
 
             # 結合(join)由来の列は、GPKGレイヤーに結合されていても書き込み先は
@@ -1128,7 +1218,9 @@ class CompartmentCompassWindow(QWidget):
 
             # 列幅をtbl側にも反映する（filterTbl側のヘッダーを基準とする）
             for visual_pos, model_col in enumerate(self._modelColumnOrder):
-                self.tbl.setColumnWidth(model_col, self.filterTbl.columnWidth(visual_pos))
+                self.tbl.setColumnWidth(
+                    model_col, self.filterTbl.columnWidth(visual_pos)
+                )
 
             # 縦見出しはtbl側の行番号ガター幅に合わせて確保する。
             # ラベルは行番号の代わりに絞り込み行であることを示すマークを表示する。
@@ -1264,6 +1356,23 @@ class CompartmentCompassWindow(QWidget):
         fidRow.addWidget(self.infoFidNameLabel)
         fidRow.addWidget(self.infoFidValueLabel)
         fidRow.addStretch(1)
+        # クリックでbtnShowAllFieldsのトグルと同じ動作をするショートカット。
+        # ラベルではなくフラットなQPushButtonにして、見た目はテキストのまま
+        # クリック可能にする。
+        self.lblAllInfoMode = QPushButton('')
+        self.lblAllInfoMode.setFlat(True)
+        self.lblAllInfoMode.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.lblAllInfoMode.setStyleSheet(
+            'QPushButton { color: #5c6bc0; font-weight: bold; '
+            'font-size: 11px; border: none; background: transparent; '
+            'padding: 0; text-decoration: underline; }'
+        )
+        self.lblAllInfoMode.clicked.connect(
+            lambda: self.btnShowAllFields.setChecked(
+                not self.btnShowAllFields.isChecked()
+            )
+        )
+        fidRow.addWidget(self.lblAllInfoMode)
         groupLayout.addLayout(fidRow)
 
         # 設定済みInfo fields（固定10行）。「全フィールドを表示」ON時は隠す。
@@ -1303,7 +1412,11 @@ class CompartmentCompassWindow(QWidget):
 
     def _update_info_tab(self, *_args):
         index = self.tbl.currentIndex()
-        fid = index.data(QgsAttributeTableModel.FeatureIdRole) if index.isValid() else None
+        fid = (
+            index.data(QgsAttributeTableModel.FeatureIdRole)
+            if index.isValid()
+            else None
+        )
 
         feature = None
         if fid is not None and self._layerCache is not None:
@@ -1311,13 +1424,17 @@ class CompartmentCompassWindow(QWidget):
             if feature is not None and not feature.isValid():
                 feature = None
 
-        self.infoFidValueLabel.setText('' if feature is None else str(feature.id()))
+        self.infoFidValueLabel.setText(
+            '' if feature is None else str(feature.id())
+        )
 
         if self._showAllFields:
             self._populate_all_fields(feature)
             return
 
-        field_names = [f.name() for f in feature.fields()] if feature is not None else []
+        field_names = (
+            [f.name() for f in feature.fields()] if feature is not None else []
+        )
         for combo, (nameLabel, valueLabel) in zip(
             self.infoFieldCombos, self.infoValueLabels
         ):
@@ -1337,7 +1454,13 @@ class CompartmentCompassWindow(QWidget):
         self._showAllFields = checked
         self.infoConfiguredContainer.setVisible(not checked)
         self.infoAllFieldsContainer.setVisible(checked)
+        self.lblAllInfoMode.setText(
+            self.tr('All info mode ON')
+            if checked
+            else self.tr('All info mode OFF')
+        )
         self._update_info_tab()
+        self._save_state()
 
     def _populate_all_fields(self, feature):
         # レイヤーごとにフィールド数が違うため、切替・地物変更のたびに作り直す。
@@ -1378,16 +1501,16 @@ class CompartmentCompassWindow(QWidget):
         layout.addStretch(1)
 
     def _build_tips_group(self, parent_layout):
-        group = QGroupBox(self.tr('Tips'))
-        tipsLayout = QVBoxLayout(group)
+        self.tipsGroup = QGroupBox(self.tr('Tips'))
+        tipsLayout = QVBoxLayout(self.tipsGroup)
 
-        ruleLabel = QLabel(self.tr(
+        self.tipsRuleLabel = QLabel(self.tr(
             'Text columns: substring match, case-insensitive.\n'
             'Numeric columns: comma-separated comparisons '
             '(>, >=, <, <=, ==, !=). No operator = exact match.'
         ))
-        ruleLabel.setWordWrap(True)
-        tipsLayout.addWidget(ruleLabel)
+        self.tipsRuleLabel.setWordWrap(True)
+        tipsLayout.addWidget(self.tipsRuleLabel)
 
         examples = [
             ('>=100', self.tr('100 or more')),
@@ -1397,6 +1520,8 @@ class CompartmentCompassWindow(QWidget):
             ('100', self.tr('Exactly 100')),
         ]
         grid = QGridLayout()
+        self.tipsExplLabels = []
+        self.tipsCopyButtons = []
         for row, (pattern, explanation) in enumerate(examples):
             patternLabel = QLabel(pattern)
             patternLabel.setStyleSheet('font-family: monospace;')
@@ -1406,12 +1531,14 @@ class CompartmentCompassWindow(QWidget):
                 lambda _checked, text=pattern: self._copy_to_clipboard(text)
             )
             grid.addWidget(btnCopy, row, 1)
+            self.tipsCopyButtons.append(btnCopy)
             explLabel = QLabel(explanation)
             grid.addWidget(explLabel, row, 2)
+            self.tipsExplLabels.append(explLabel)
         grid.setColumnStretch(2, 1)
         tipsLayout.addLayout(grid)
 
-        parent_layout.addWidget(group)
+        parent_layout.addWidget(self.tipsGroup)
 
     @staticmethod
     def _copy_to_clipboard(text):
@@ -1431,7 +1558,8 @@ class CompartmentCompassWindow(QWidget):
             self._save_state()
 
     def _build_field_group(
-        self, parent_layout, title_key, count, with_clear=False, with_show_all=False
+        self, parent_layout, title_key, count,
+        with_clear=False, with_show_all=False,
     ):
         group = QGroupBox(self.tr(title_key))
         grid = QGridLayout(group)
