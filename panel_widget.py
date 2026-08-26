@@ -272,9 +272,9 @@ class _ColumnFilterProxyModel(QSortFilterProxyModel):
         if source_model is None:
             return False
         layer = source_model.layer()
-        fid = source_index.data(QgsAttributeTableModel.FeatureIdRole)
+        fid = source_index.data(QgsAttributeTableModel.CustomRole.FeatureIdRole)
         field_index = source_model.data(
-            source_index, QgsAttributeTableModel.FieldIndexRole
+            source_index, QgsAttributeTableModel.CustomRole.FieldIndexRole
         )
         if layer is None or fid is None or field_index is None:
             return False
@@ -1008,7 +1008,7 @@ class CompartmentCompassWindow(QWidget):
     def _get_selected_fids(self):
         fids = set()
         for index in self.tbl.selectionModel().selectedIndexes():
-            fid = index.data(QgsAttributeTableModel.FeatureIdRole)
+            fid = index.data(QgsAttributeTableModel.CustomRole.FeatureIdRole)
             if fid is not None:
                 fids.add(fid)
         return list(fids)
@@ -1077,7 +1077,7 @@ class CompartmentCompassWindow(QWidget):
         index = self.tbl.currentIndex()
         if not index.isValid():
             return
-        fid = index.data(QgsAttributeTableModel.FeatureIdRole)
+        fid = index.data(QgsAttributeTableModel.CustomRole.FeatureIdRole)
         if fid is None:
             return
 
@@ -1759,7 +1759,7 @@ class CompartmentCompassWindow(QWidget):
     def _update_info_tab(self, *_args):
         index = self.tbl.currentIndex()
         fid = (
-            index.data(QgsAttributeTableModel.FeatureIdRole)
+            index.data(QgsAttributeTableModel.CustomRole.FeatureIdRole)
             if index.isValid()
             else None
         )
