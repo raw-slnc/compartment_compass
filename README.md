@@ -34,12 +34,18 @@ Numeric columns:  comma-separated comparisons
                    >, >=, <, <=, ==, !=
                    no operator = exact match
 
+Comma (,) = AND    "|" = OR    "!" prefix = exclude (text only)
+
 Examples
-  >=100          100 or more
-  <200           less than 200
-  >=100,<200     100 or more, less than 200
-  !=0            not equal to 0
-  100            exactly 100
+  >=100              100 or more
+  <200               less than 200
+  >=100,<200         100 or more, less than 200
+  !=0                not equal to 0
+  100                exactly 100
+  !abc               excludes "abc"
+  abc,!xyz           contains "abc", excludes "xyz"
+  abc|xyz            contains "abc" or "xyz"
+  <100|>=500         less than 100, or 500 or more
 ```
 
 The same examples are also available (and copyable) in the panel's "Tips" tab.
@@ -135,12 +141,18 @@ This plugin was created to improve workflow efficiency. The author is not respon
            >, >=, <, <=, ==, !=
            演算子省略は完全一致
 
+カンマ(,) = AND    「|」= OR    先頭「!」= 除外（テキストのみ）
+
 入力例
-  >=100          100以上
-  <200           200未満
-  >=100,<200     100以上200未満
-  !=0            0以外
-  100            100と完全一致
+  >=100              100以上
+  <200               200未満
+  >=100,<200         100以上200未満
+  !=0                0以外
+  100                100と完全一致
+  !abc               "abc"を除外
+  abc,!xyz           "abc"を含み"xyz"を除外
+  abc|xyz            "abc"または"xyz"を含む
+  <100|>=500         100未満、または500以上
 ```
 
 同様の例は、パネル内「Tips」タブでも確認・コピーできます。

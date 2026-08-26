@@ -8,7 +8,7 @@ qgisMinimumVersion=4.0.0
 qgisMaximumVersion=4.99
 description=Filter, search, and edit forest planning map data (森林計画図) in a spreadsheet-style table that stays in sync with the map — find the feature first, then confirm and act on it.
 description[ja]=森林計画図データを、地図と連動するスプレッドシート風テーブルで絞り込み・検索・編集します。まず地物を見つけ、地図で確認してから操作する、というテーブル視点の設計です。
-version=0.1.0
+version=0.1.1
 author=Hideharu Masai
 email=hideharumasai@void.mints.ne.jp
 
@@ -23,6 +23,7 @@ repository=https://github.com/raw-slnc/compartment_compass
 
 hasProcessingProvider=no
 changelog=
+    0.1.1 - Add OR ("|") syntax to the filter row, combinable with the existing AND (comma) and exclude (!) syntax.
     0.1.0 - Layer picker; spreadsheet-style table with a per-column filter row (text substring match, numeric comparisons with >,>=,<,<=,==,!=); column display/info/hidden configuration; table-map selection sync with zoom-to-selection and cell-value tooltip; Info tab with configurable fields plus a fixed QGIS internal ID display; GeoPackage-only inline attribute editing with a save/discard/cancel prompt; English/Japanese UI language toggle; dock or separate-window display mode
 
 tags=python,forest,forestry,japan,vector,gpkg,geopackage,csv,search,filter,query,attribute table,attribute search,attribute editor,select by attribute,spreadsheet,excel,editor,highlight,zoom

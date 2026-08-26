@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+import html
 import re
 
 from qgis.PyQt.QtCore import (
@@ -67,7 +68,48 @@ _ZOOM_MARGIN_RATIO = 1.0
 _TOOLTIP_DURATION_MS = 3000
 
 # 選択シンボロジ: 色はデフォルトのまま、塗りのみ15%に変更
-_SELECTION_ALPHA = 0.15
+_SELECTION_ALPHA = 0.25
+
+
+def _spaced_multiline(text, line_height='145%', indent_after=(), break_after=()):
+    """QLabel用: 行間を広げたリッチテキストにする。
+    indent_afterに渡した文言の直後で改行し、続く説明文を字下げする。
+    break_afterに渡した文字（例:「。」「.」）の直後でも改行・字下げする
+    （行末に来た場合は改行しない）。
+    """
+    if isinstance(break_after, str):
+        break_after = (break_after,)
+    # 比較演算子(>, >=, <, <=など)を含む原文をそのままリッチテキストに渡すと
+    # "<"が不正なタグ開始として解釈され、以降の内容が表示から欠落する。
+    text = html.escape(text)
+    indent = '&nbsp;&nbsp;&nbsp;&nbsp;'
+    out_lines = []
+    for line in text.split('\n'):
+        for prefix in indent_after:
+            if line.startswith(prefix):
+                line = prefix + '<br>' + indent + line[len(prefix):].lstrip()
+                break
+        for ch in break_after:
+            segments = line.split(ch)
+            if segments[-1] == '':
+                line = (ch + '<br>' + indent).join(segments[:-1]) + ch
+            else:
+                line = (ch + '<br>' + indent).join(segments)
+        out_lines.append(line)
+    return '<p style="line-height:{0};">{1}</p>'.format(
+        line_height, '<br>'.join(out_lines)
+    )
+
+
+def _tips_pattern_link_html(pattern):
+    """Tips一覧の項目部分HTML: クリックでコピーできるリンク表示。"""
+    return (
+        '<a href="#" style="text-decoration:none; font-family:monospace; '
+        'color:#3d5afe;">{0}</a>'
+    ).format(html.escape(pattern))
+
+
+_TIPS_INDENT_AFTER = ('Text columns:', 'テキスト列:', 'Numeric columns:', '数値列:')
 
 
 def _iter_layer_tree_layers(node):
@@ -92,15 +134,8 @@ LANGUAGE_LABELS = {'en': 'English', 'ja': '日本語'}
 _NUM_TOKEN_RE = re.compile(r'^(>=|<=|!=|==|>|<)?\s*(-?\d+(?:\.\d+)?)$')
 
 
-def _numeric_match(cell_text, filter_text):
-    try:
-        value = float(cell_text)
-    except (TypeError, ValueError):
-        return False
-    for token in filter_text.split(','):
-        token = token.strip()
-        if not token:
-            continue
+def _numeric_and_match(value, tokens):
+    for token in tokens:
         m = _NUM_TOKEN_RE.match(token)
         if not m:
             return False
@@ -122,14 +157,26 @@ def _numeric_match(cell_text, filter_text):
     return True
 
 
-def _text_match(cell_text, filter_text):
-    # カンマ区切りでAND評価。先頭に"!"を付けたトークンは除外（非包含）条件になる。
-    # 例: "森林,!計画" は「森林を含み、かつ計画を含まない」。
-    cell_lower = cell_text.lower()
-    for token in filter_text.split(','):
-        token = token.strip()
-        if not token:
+def _numeric_match(cell_text, filter_text):
+    # "|"区切りでOR評価。各OR項の中はカンマ区切りでAND評価（従来通り）。
+    # 例: ">=100,<200|>=500" は「100以上200未満、または500以上」。
+    try:
+        value = float(cell_text)
+    except (TypeError, ValueError):
+        return False
+    has_any_token = False
+    for group in filter_text.split('|'):
+        tokens = [t.strip() for t in group.split(',') if t.strip()]
+        if not tokens:
             continue
+        has_any_token = True
+        if _numeric_and_match(value, tokens):
+            return True
+    return not has_any_token
+
+
+def _text_and_match(cell_lower, tokens):
+    for token in tokens:
         if token.startswith('!'):
             needle = token[1:].strip().lower()
             if needle and needle in cell_lower:
@@ -139,10 +186,29 @@ def _text_match(cell_text, filter_text):
     return True
 
 
+def _text_match(cell_text, filter_text):
+    # "|"区切りでOR評価。各OR項の中はカンマ区切りでAND評価（従来通り）。
+    # 先頭に"!"を付けたトークンは除外（非包含）条件になる。
+    # 例: "杉|桧" は「杉または桧を含む」、"森林,!計画" は
+    # 「森林を含み、かつ計画を含まない」。
+    cell_lower = cell_text.lower()
+    has_any_token = False
+    for group in filter_text.split('|'):
+        tokens = [t.strip() for t in group.split(',') if t.strip()]
+        if not tokens:
+            continue
+        has_any_token = True
+        if _text_and_match(cell_lower, tokens):
+            return True
+    return not has_any_token
+
+
 def _looks_like_numeric_comparison_filter(filter_text):
     # テキスト型フィールドでは、数字だけの入力は地名・小班名などの部分一致を優先する。
     # 比較演算子が含まれる場合だけ、数値比較の意図とみなす。
-    tokens = [t.strip() for t in filter_text.split(',') if t.strip()]
+    tokens = []
+    for group in filter_text.split('|'):
+        tokens.extend(t.strip() for t in group.split(',') if t.strip())
     if not tokens:
         return False
     matched = [_NUM_TOKEN_RE.match(t) for t in tokens]
@@ -305,6 +371,10 @@ class CompartmentCompassWindow(QWidget):
         self.lblLayer = QLabel(self.tr('Layer:'))
         layerRow.addWidget(self.lblLayer)
         self.cmbLayer = QComboBox()
+        self.cmbLayer.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self.cmbLayer.setMinimumContentsLength(10)
         self.cmbLayer.setMinimumWidth(200)
         layerRow.addWidget(self.cmbLayer, 1)
         leftLayout.addLayout(layerRow)
@@ -334,6 +404,11 @@ class CompartmentCompassWindow(QWidget):
         self._leftTabs.addTab(self.tabSetting, self.tr('Setting'))
         self._leftTabs.addTab(self.tabTips, self.tr('Tips'))
         leftLayout.addWidget(self._leftTabs)
+
+        lbl_credit = QLabel('Developed by Avid Tree Work')
+        lbl_credit.setStyleSheet('color: #AAAACC; font-size: 10px; background: transparent;')
+        lbl_credit.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        leftLayout.addWidget(lbl_credit)
 
         self._splitter.addWidget(leftContainer)
 
@@ -466,7 +541,15 @@ class CompartmentCompassWindow(QWidget):
         rightLayout.addLayout(bottomRow)
 
         self._splitter.addWidget(rightContainer)
-        self._splitter.setSizes([380, 820])
+        if self._saved_splitter_sizes:
+            try:
+                splitter_sizes = [int(v) for v in self._saved_splitter_sizes]
+            except (TypeError, ValueError):
+                splitter_sizes = [380, 820]
+        else:
+            splitter_sizes = [380, 820]
+        self._splitter.setSizes(splitter_sizes)
+        self._splitter.splitterMoved.connect(self._save_state)
         root.addWidget(self._splitter, 1)
 
         self.cmbLayer.currentIndexChanged.connect(self._on_layer_selected)
@@ -634,15 +717,20 @@ class CompartmentCompassWindow(QWidget):
                 label.setText(self.tr('Field {0}:').format(i + 1))
             if clear_btn is not None:
                 clear_btn.setText(self.tr('Clear'))
+                clear_btn.setMinimumWidth(
+                    self.btnShowAllFields.sizeHint().width()
+                )
         self.grpTableSetting.setTitle(self.tr('Table setting'))
         self.btnColumnConfig.setText(self.tr('Column config'))
         self.tipsGroup.setTitle(self.tr('Tips'))
-        self.tipsRuleLabel.setText(self.tr(
+        self.tipsRuleLabel.setText(_spaced_multiline(self.tr(
             'Text columns: substring match, case-insensitive. '
-            'Comma-separated = AND; prefix "!" to exclude.\n'
+            'Comma-separated = AND; "|"-separated = OR; '
+            'prefix "!" to exclude.\n'
             'Numeric columns: comma-separated comparisons '
-            '(>, >=, <, <=, ==, !=). No operator = exact match.'
-        ))
+            '(>, >=, <, <=, ==, !=), "|"-separated = OR. '
+            'No operator = exact match.'
+        ), indent_after=_TIPS_INDENT_AFTER, break_after=('。', '.')))
         tips_explanations = [
             self.tr('100 or more'),
             self.tr('Less than 200'),
@@ -651,11 +739,11 @@ class CompartmentCompassWindow(QWidget):
             self.tr('Exactly 100'),
             self.tr('Excludes "abc"'),
             self.tr('Contains "abc", excludes "xyz"'),
+            self.tr('Contains "abc" or "xyz"'),
+            self.tr('Less than 100, or 500 or more'),
         ]
-        for label, text in zip(self.tipsExplLabels, tips_explanations):
-            label.setText(text)
-        for btn in self.tipsCopyButtons:
-            btn.setText(self.tr('Copy'))
+        for label, explanation in zip(self.tipsExplLabels, tips_explanations):
+            label.setText('：' + explanation)
 
     # -- 状態の保存/復元（レイヤー単位ではなく直近の状態のみ） --------------
 
@@ -675,6 +763,9 @@ class CompartmentCompassWindow(QWidget):
         )
         self._saved_show_all_fields = settings.value(
             'compartment_compass/show_all_fields', True, type=bool
+        )
+        self._saved_splitter_sizes = settings.value(
+            'compartment_compass/splitter_sizes', None
         )
 
     def _save_state(self, *_args):
@@ -699,6 +790,9 @@ class CompartmentCompassWindow(QWidget):
         settings.setValue(
             'compartment_compass/show_all_fields',
             self.btnShowAllFields.isChecked(),
+        )
+        settings.setValue(
+            'compartment_compass/splitter_sizes', self._splitter.sizes()
         )
 
     def cleanup(self):
@@ -777,6 +871,12 @@ class CompartmentCompassWindow(QWidget):
             self._apply_selection_color(layer)
             self._connect_selection_signal(layer)
             self._sync_table_selection_from_layer()
+            # テーブル読み込み(_populate_table)完了後にレイヤーパネル側も同期する。
+            # 読み込み中の描画と競合しないよう、ここまで待ってから選択・アクティブ化する。
+            self.iface.layerTreeView().setCurrentLayer(layer)
+            node = QgsProject.instance().layerTreeRoot().findLayer(layer.id())
+            if node is not None and not node.itemVisibilityChecked():
+                node.setItemVisibilityChecked(True)
         else:
             self._update_info_tab()
 
@@ -920,7 +1020,9 @@ class CompartmentCompassWindow(QWidget):
         current_name = ''
         if current_col >= 0:
             header_item = self.filterTbl.horizontalHeaderItem(current_col)
-            current_name = header_item.text() if header_item is not None else ''
+            current_name = (
+                header_item.text() if header_item is not None else ''
+            )
         if self._tableModel is None and self._ensure_table_loaded():
             if current_name in self._displayedFieldNames:
                 self._syncing_selection = True
@@ -1752,12 +1854,14 @@ class CompartmentCompassWindow(QWidget):
         self.tipsGroup = QGroupBox(self.tr('Tips'))
         tipsLayout = QVBoxLayout(self.tipsGroup)
 
-        self.tipsRuleLabel = QLabel(self.tr(
+        self.tipsRuleLabel = QLabel(_spaced_multiline(self.tr(
             'Text columns: substring match, case-insensitive. '
-            'Comma-separated = AND; prefix "!" to exclude.\n'
+            'Comma-separated = AND; "|"-separated = OR; '
+            'prefix "!" to exclude.\n'
             'Numeric columns: comma-separated comparisons '
-            '(>, >=, <, <=, ==, !=). No operator = exact match.'
-        ))
+            '(>, >=, <, <=, ==, !=), "|"-separated = OR. '
+            'No operator = exact match.'
+        ), indent_after=_TIPS_INDENT_AFTER, break_after=('。', '.')))
         self.tipsRuleLabel.setWordWrap(True)
         tipsLayout.addWidget(self.tipsRuleLabel)
 
@@ -1769,24 +1873,23 @@ class CompartmentCompassWindow(QWidget):
             ('100', self.tr('Exactly 100')),
             ('!abc', self.tr('Excludes "abc"')),
             ('abc,!xyz', self.tr('Contains "abc", excludes "xyz"')),
+            ('abc|xyz', self.tr('Contains "abc" or "xyz"')),
+            ('<100|>=500', self.tr('Less than 100, or 500 or more')),
         ]
         grid = QGridLayout()
         self.tipsExplLabels = []
-        self.tipsCopyButtons = []
         for row, (pattern, explanation) in enumerate(examples):
-            patternLabel = QLabel(pattern)
-            patternLabel.setStyleSheet('font-family: monospace;')
-            grid.addWidget(patternLabel, row, 0)
-            btnCopy = QPushButton(self.tr('Copy'))
-            btnCopy.clicked.connect(
-                lambda _checked, text=pattern: self._copy_to_clipboard(text)
+            patternLabel = QLabel(_tips_pattern_link_html(pattern))
+            patternLabel.setToolTip(self.tr('Click the pattern to copy'))
+            patternLabel.linkActivated.connect(
+                lambda _href, text=pattern: self._copy_to_clipboard(text)
             )
-            grid.addWidget(btnCopy, row, 1)
-            self.tipsCopyButtons.append(btnCopy)
-            explLabel = QLabel(explanation)
-            grid.addWidget(explLabel, row, 2)
+            grid.addWidget(patternLabel, row, 0)
+            explLabel = QLabel('：' + explanation)
+            explLabel.setWordWrap(True)
+            grid.addWidget(explLabel, row, 1)
             self.tipsExplLabels.append(explLabel)
-        grid.setColumnStretch(2, 1)
+        grid.setColumnStretch(1, 1)
         tipsLayout.addLayout(grid)
 
         parent_layout.addWidget(self.tipsGroup)
@@ -1827,6 +1930,13 @@ class CompartmentCompassWindow(QWidget):
             grid.addWidget(label, row, pair * 2)
             labels.append(label)
             combo = QComboBox()
+            # フィールド名の長さでパネル最小幅が広がらないよう、幅の基準を
+            # 短い文字数に固定する。表示しきれない分はQtの標準機能で
+            # 「...」省略表示される。
+            combo.setSizeAdjustPolicy(
+                QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+            )
+            combo.setMinimumContentsLength(6)
             combo.currentIndexChanged.connect(self._save_state)
             grid.addWidget(combo, row, pair * 2 + 1)
             combos.append(combo)
@@ -1843,6 +1953,13 @@ class CompartmentCompassWindow(QWidget):
             if with_clear:
                 clear_btn = QPushButton(self.tr('Clear'))
                 clear_btn.clicked.connect(lambda: self._clear_combos(combos))
+                if with_show_all:
+                    # 固定値ではなく「Show all fields」ボタンの実際の幅に
+                    # 追従させる（言語切替でテキスト幅が変わってもretranslate_ui
+                    # 側で再同期される）。
+                    clear_btn.setMinimumWidth(
+                        self.btnShowAllFields.sizeHint().width()
+                    )
                 grid.addWidget(clear_btn, clear_row, 3)
         parent_layout.addWidget(group)
         self._settingGroups.append((group, title_key, labels, clear_btn))
