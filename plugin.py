@@ -84,6 +84,8 @@ class CompartmentCompass:
         self.actions.append(action)
 
     def unload(self):
+        self._remove_translator()
+
         for action in self.actions:
             self.iface.removePluginVectorMenu(self.menu, action)
             self.iface.removeVectorToolBarIcon(action)

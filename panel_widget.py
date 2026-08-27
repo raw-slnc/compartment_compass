@@ -375,7 +375,7 @@ class CompartmentCompassWindow(QWidget):
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
         self.cmbLayer.setMinimumContentsLength(10)
-        self.cmbLayer.setMinimumWidth(200)
+        self.cmbLayer.setMinimumWidth(220)
         layerRow.addWidget(self.cmbLayer, 1)
         leftLayout.addLayout(layerRow)
 
@@ -1655,8 +1655,12 @@ class CompartmentCompassWindow(QWidget):
     def _build_setting_tab(self):
         layout = QVBoxLayout(self.tabSetting)
 
+        container = QWidget()
+        containerLayout = QVBoxLayout(container)
+        containerLayout.setContentsMargins(0, 0, 0, 0)
+
         self.infoFieldCombos = self._build_field_group(
-            layout, 'Info fields', INFO_FIELD_COUNT,
+            containerLayout, 'Info fields', INFO_FIELD_COUNT,
             with_clear=True, with_show_all=True,
         )
 
@@ -1665,9 +1669,20 @@ class CompartmentCompassWindow(QWidget):
         self.btnColumnConfig = QPushButton(self.tr('Column config'))
         self.btnColumnConfig.clicked.connect(self._on_column_config)
         tableLayout.addWidget(self.btnColumnConfig)
-        layout.addWidget(self.grpTableSetting)
+        containerLayout.addWidget(self.grpTableSetting)
 
-        layout.addStretch(1)
+        containerLayout.addStretch(1)
+
+        # Settingタブも項目数が多いと縦に長くなるため、Infoタブと同様に
+        # スクロール領域に収めてタブ全体の最小高さを抑える。QScrollAreaは
+        # 中身の幅を無視して縮むため、幅の最小値だけは中身のsizeHintで
+        # 明示的に固定し、横方向の最小サイズは変えない。
+        scrollArea = QScrollArea()
+        scrollArea.setWidgetResizable(True)
+        scrollArea.setFrameShape(QFrame.Shape.NoFrame)
+        scrollArea.setWidget(container)
+        scrollArea.setMinimumWidth(container.sizeHint().width())
+        layout.addWidget(scrollArea)
 
         for combo in self.infoFieldCombos:
             combo.currentIndexChanged.connect(self._update_info_tab)
@@ -1847,8 +1862,23 @@ class CompartmentCompassWindow(QWidget):
 
     def _build_tips_tab(self):
         layout = QVBoxLayout(self.tabTips)
-        self._build_tips_group(layout)
-        layout.addStretch(1)
+
+        container = QWidget()
+        containerLayout = QVBoxLayout(container)
+        containerLayout.setContentsMargins(0, 0, 0, 0)
+        self._build_tips_group(containerLayout)
+        containerLayout.addStretch(1)
+
+        # 説明文・例一覧が多いと縦に長くなるため、Info/Settingタブと同様に
+        # スクロール領域に収めてタブ全体の最小高さを抑える。QScrollAreaは
+        # 中身の幅を無視して縮むため、幅の最小値だけは中身のsizeHintで
+        # 明示的に固定し、横方向の最小サイズは変えない。
+        scrollArea = QScrollArea()
+        scrollArea.setWidgetResizable(True)
+        scrollArea.setFrameShape(QFrame.Shape.NoFrame)
+        scrollArea.setWidget(container)
+        scrollArea.setMinimumWidth(container.sizeHint().width())
+        layout.addWidget(scrollArea)
 
     def _build_tips_group(self, parent_layout):
         self.tipsGroup = QGroupBox(self.tr('Tips'))
