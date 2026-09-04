@@ -60,6 +60,9 @@ _INFO_COLOR = QColor('#e67e22')
 # 結合(join)由来の列。GPKGレイヤーであっても結合元がGPKGとは限らないため、
 # 編集可否とは別に「このデータの由来」を示す目的の色。
 _JOIN_COLOR = QColor('#2e7d32')
+# 編集済みだが未保存（コミット前）のセルの文字色。保存確定後は標準の文字色
+# （このロールを返さずsuperにフォールバック）に戻る。
+_UNSAVED_EDIT_COLOR = QColor('#c0392b')
 
 # 選択フィーチャーへズームする際の余白（フィーチャーの大きい方の辺に対する比率）
 _ZOOM_MARGIN_RATIO = 1.0
@@ -238,6 +241,7 @@ class _ColumnFilterProxyModel(QSortFilterProxyModel):
         # ことが実機で判明したため（14万件で約29秒）。
         self._matchingFids = None
         self._readonlyColumns = set()  # 結合(join)由来の列のモデル列番号
+        self._unsavedEditedCells = set()  # {(fid, field_index)}、保存(コミット)前の編集セル
 
     def set_matching_fids(self, fids):
         self._matchingFids = fids
@@ -245,6 +249,11 @@ class _ColumnFilterProxyModel(QSortFilterProxyModel):
 
     def set_readonly_columns(self, cols):
         self._readonlyColumns = set(cols)
+
+    def clear_unsaved_edits(self):
+        # レイヤー切替時（fid/field_indexの意味が変わる）と、保存確定/破棄後の
+        # 両方から呼ばれる。呼び出し側でtbl.viewport().update()による再描画が必要。
+        self._unsavedEditedCells.clear()
 
     def flags(self, index):
         base_flags = super().flags(index)
@@ -257,6 +266,22 @@ class _ColumnFilterProxyModel(QSortFilterProxyModel):
             return True
         fid = self.sourceModel().rowToId(source_row)
         return fid in self._matchingFids
+
+    def data(self, index, role=Qt.ItemDataRole.DisplayRole):
+        if role == Qt.ItemDataRole.ForegroundRole:
+            source_index = self.mapToSource(index)
+            source_model = self.sourceModel()
+            if source_model is not None:
+                fid = source_index.data(
+                    QgsAttributeTableModel.CustomRole.FeatureIdRole
+                )
+                field_index = source_model.data(
+                    source_index,
+                    QgsAttributeTableModel.CustomRole.FieldIndexRole,
+                )
+                if (fid, field_index) in self._unsavedEditedCells:
+                    return _UNSAVED_EDIT_COLOR
+        return super().data(index, role)
 
     def setData(self, index, value, role=Qt.ItemDataRole.EditRole):
         # QgsAttributeTableModel.setData()は実機確認の結果、期待通りに
@@ -280,8 +305,11 @@ class _ColumnFilterProxyModel(QSortFilterProxyModel):
             return False
         ok = layer.changeAttributeValue(fid, field_index, value)
         if ok:
+            self._unsavedEditedCells.add((fid, field_index))
             self.dataChanged.emit(
-                index, index, [role, Qt.ItemDataRole.DisplayRole]
+                index,
+                index,
+                [role, Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ForegroundRole],
             )
         return ok
 
@@ -498,8 +526,13 @@ class CompartmentCompassWindow(QWidget):
 
         # 2つのテーブルを1つの表であるかのように矢印キーで行き来できるようにする
         # （↓でfilterTbl→tbl先頭行、↑でtbl先頭行→filterTblへフォーカス移動）。
+        # キー操作はフォーカスを持つtbl/filterTbl自身に届くためこれで捕まるが、
+        # ホイール操作はマウス位置にあるviewport側に届くため、Shift+ホイールの
+        # 横スクロール検知にはviewportへも別途フィルタを仕込む必要がある。
         self.filterTbl.installEventFilter(self)
         self.tbl.installEventFilter(self)
+        self.filterTbl.viewport().installEventFilter(self)
+        self.tbl.viewport().installEventFilter(self)
 
         bottomRow = QHBoxLayout()
         self.lblLayerType = QLabel('')
@@ -574,6 +607,17 @@ class CompartmentCompassWindow(QWidget):
     # -- filterTbl/tblを1つの表として矢印キーで行き来する -------------------
 
     def eventFilter(self, obj, event):
+        if event.type() == QEvent.Type.Wheel:
+            # 実際のホイール操作はtbl/filterTbl自身ではなく、その内部の
+            # viewport（QAbstractScrollAreaが保持する別ウィジェット）に届く。
+            # installEventFilterはイベント送信先のオブジェクトでしか発火しない
+            # ため、viewport側にもフィルタを仕込んでおく必要がある。
+            if obj in (
+                self.tbl.viewport(),
+                self.filterTbl.viewport(),
+            ) and (event.modifiers() & Qt.KeyboardModifier.ShiftModifier):
+                self._scroll_table_horizontally(event)
+                return True
         if event.type() == QEvent.Type.KeyPress:
             if obj is self.filterTbl and event.key() == Qt.Key.Key_Down:
                 self._focus_table_first_row()
@@ -586,6 +630,20 @@ class CompartmentCompassWindow(QWidget):
                     self._focus_filter_row()
                     return True
         return super().eventFilter(obj, event)
+
+    def _scroll_table_horizontally(self, event):
+        # Shift+ホイールで横スクロール（Excelのセル操作と同じ挙動）。tbl側の
+        # 横スクロールバーはfilterTbl側と双方向に同期済みなので、どちらの上で
+        # ホイール操作してもtbl側を動かせば両方に反映される。回転量は通常の
+        # 縦ホイール1ノッチ分のスクロール量（singleStep * wheelScrollLines）を
+        # そのまま横方向に流用し、体感速度を通常スクロールと揃える。
+        delta = event.angleDelta().y() or event.angleDelta().x()
+        if not delta:
+            return
+        hbar = self.tbl.horizontalScrollBar()
+        notches = delta / 120.0
+        step = hbar.singleStep() * QApplication.wheelScrollLines()
+        hbar.setValue(round(hbar.value() - notches * step))
 
     def _clear_selected_filter_cells(self):
         items = self.filterTbl.selectedItems()
@@ -638,6 +696,7 @@ class CompartmentCompassWindow(QWidget):
             self.tbl.clearSelection()
         finally:
             self._syncing_selection = False
+        self._clear_map_selection()
         self.filterTbl.setCurrentCell(0, visual_col)
         self.filterTbl.setFocus()
 
@@ -816,6 +875,7 @@ class CompartmentCompassWindow(QWidget):
         # before dropping Python references, otherwise rebuilding the table can
         # leave Qt touching a deleted QgsAttributeTableModel.
         self._filterProxy.setSourceModel(None)
+        self._filterProxy.clear_unsaved_edits()
         self._tableModel = None
         self._layerCache = None
 
@@ -961,11 +1021,15 @@ class CompartmentCompassWindow(QWidget):
                 if result == QMessageBox.StandardButton.Cancel:
                     return False
                 if result == QMessageBox.StandardButton.Save:
-                    layer.commitChanges()
+                    # コミット失敗時は未保存のまま＝該当セルは赤字表示を維持する。
+                    if layer.commitChanges():
+                        self._filterProxy.clear_unsaved_edits()
                 else:
                     layer.rollBack()
+                    self._filterProxy.clear_unsaved_edits()
             else:
                 layer.commitChanges()
+            self.tbl.viewport().update()
         self._editModeActive = False
         self.tbl.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)
         self._set_edit_mode_checked(False)
@@ -1042,7 +1106,22 @@ class CompartmentCompassWindow(QWidget):
             self.tbl.selectionModel().clearCurrentIndex()
         finally:
             self._syncing_selection = False
+        self._clear_map_selection()
         self._update_info_tab()
+
+    def _clear_map_selection(self):
+        # 検索行(filterTbl)は特定の地物に対応しないため、フォーカスが移った
+        # 時点で地図側のフィーチャー選択（ハイライト）も解除し、テーブル選択
+        # と地図選択の対応関係を崩さないようにする。
+        layer = self._currentLayer
+        if layer is None or layer.selectedFeatureCount() == 0:
+            return
+        self._syncing_selection = True
+        try:
+            layer.removeSelection()
+        finally:
+            self._syncing_selection = False
+        self._refresh_layer_selection(layer)
 
     def _on_table_selection_changed(self, *_args):
         if self._syncing_selection:
