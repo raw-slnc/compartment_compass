@@ -12,7 +12,7 @@ from qgis.PyQt.QtCore import (
     Qt,
     QTimer,
 )
-from qgis.PyQt.QtGui import QColor, QPalette
+from qgis.PyQt.QtGui import QColor, QKeySequence, QPalette
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -241,7 +241,15 @@ class _ColumnFilterProxyModel(QSortFilterProxyModel):
         # ことが実機で判明したため（14万件で約29秒）。
         self._matchingFids = None
         self._readonlyColumns = set()  # 結合(join)由来の列のモデル列番号
-        self._unsavedEditedCells = set()  # {(fid, field_index)}、保存(コミット)前の編集セル
+        # 貼り付けなど複数セルの一括編集中、セルごとのdataChangedを止めて
+        # まとめて1回で発行するためのフラグ（大量貼り付け時の描画負荷対策）。
+        self._suspendDataChangedSignal = False
+        # {(fid, field_index): 編集セッション中に最初に触れた時点の値}。
+        # 未保存編集（赤字）の判定に使う。「編集バッファに変更が記録されている
+        # か」だけで判定すると、Undoで値が戻っても記録は残ったままだったり、
+        # 元と同じ値を書き戻しても「変更あり」扱いになったりするため、実際の
+        # 値をここに保持した元の値と比較する方式にしている。
+        self._originalValues = {}
 
     def set_matching_fids(self, fids):
         self._matchingFids = fids
@@ -250,10 +258,15 @@ class _ColumnFilterProxyModel(QSortFilterProxyModel):
     def set_readonly_columns(self, cols):
         self._readonlyColumns = set(cols)
 
-    def clear_unsaved_edits(self):
-        # レイヤー切替時（fid/field_indexの意味が変わる）と、保存確定/破棄後の
-        # 両方から呼ばれる。呼び出し側でtbl.viewport().update()による再描画が必要。
-        self._unsavedEditedCells.clear()
+    def clear_original_values(self):
+        # レイヤー切替時（fid/field_indexの意味が変わる）、保存確定後、破棄後の
+        # いずれでも呼ぶ。呼び出し側でtbl.viewport().update()による再描画が必要。
+        self._originalValues.clear()
+
+    def set_bulk_edit_mode(self, enabled):
+        # 貼り付けなど複数セルをまとめて書き込む間、setData()内のセル単位の
+        # dataChanged発行を止める。呼び出し側が一括で1回だけemitすること。
+        self._suspendDataChangedSignal = enabled
 
     def flags(self, index):
         base_flags = super().flags(index)
@@ -279,8 +292,13 @@ class _ColumnFilterProxyModel(QSortFilterProxyModel):
                     source_index,
                     QgsAttributeTableModel.CustomRole.FieldIndexRole,
                 )
-                if (fid, field_index) in self._unsavedEditedCells:
-                    return _UNSAVED_EDIT_COLOR
+                key = (fid, field_index)
+                if key in self._originalValues:
+                    current_value = source_index.data(
+                        Qt.ItemDataRole.EditRole
+                    )
+                    if current_value != self._originalValues[key]:
+                        return _UNSAVED_EDIT_COLOR
         return super().data(index, role)
 
     def setData(self, index, value, role=Qt.ItemDataRole.EditRole):
@@ -303,14 +321,39 @@ class _ColumnFilterProxyModel(QSortFilterProxyModel):
         )
         if layer is None or fid is None or field_index is None:
             return False
+        if isinstance(value, str):
+            # 貼り付け（クリップボードのテキスト）はどのフィールド型でも文字列
+            # として届くため、書き込み前にフィールド型へ変換する。通常のセル
+            # 編集（型付きエディタ経由）で渡ってくる値は既に適切な型なので、
+            # ここはそのまま通す。
+            # 実機確認の結果、convertCompatible()は変換後の値を直接返し、
+            # 変換不能な場合は(bool,value)ではなくValueErrorを送出する。
+            field = layer.fields().field(field_index)
+            try:
+                value = field.convertCompatible(value)
+            except ValueError:
+                return False
+        key = (fid, field_index)
+        if key not in self._originalValues:
+            # このセッションで初めて触れるセルの場合のみ、書き込み前の値
+            # （＝まだ未保存編集が無い、その時点の本来の値）を記録する。
+            # 2回目以降の編集ではここを通らないため、複数回編集してから
+            # 一部だけUndoしても正しく元の値と比較できる。
+            self._originalValues[key] = source_index.data(
+                Qt.ItemDataRole.EditRole
+            )
         ok = layer.changeAttributeValue(fid, field_index, value)
         if ok:
-            self._unsavedEditedCells.add((fid, field_index))
-            self.dataChanged.emit(
-                index,
-                index,
-                [role, Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.ForegroundRole],
-            )
+            if not self._suspendDataChangedSignal:
+                self.dataChanged.emit(
+                    index,
+                    index,
+                    [
+                        role,
+                        Qt.ItemDataRole.DisplayRole,
+                        Qt.ItemDataRole.ForegroundRole,
+                    ],
+                )
         return ok
 
 
@@ -629,7 +672,42 @@ class CompartmentCompassWindow(QWidget):
                 if self.tbl.currentIndex().row() == self._first_visible_row():
                     self._focus_filter_row()
                     return True
+            if obj is self.tbl and event.matches(QKeySequence.StandardKey.Copy):
+                self._copy_selected_cells()
+                return True
+            if obj is self.tbl and event.matches(QKeySequence.StandardKey.Paste):
+                self._paste_into_selected_cells()
+                return True
+            if obj is self.tbl and self._is_typeahead_key(event):
+                # Qt標準のQAbstractItemView.keyboardSearch()は、現在の列を
+                # 一致する値が見つかるまで（無ければ全行）走査する。列数の多い
+                # 大規模レイヤーで、その列に存在しない文字を打つと重い全件検索に
+                # なってしまう。編集モードでかつ編集可能な列であれば、代わりに
+                # Qt標準のAnyKeyPressedトリガー（_enter_edit_modeで設定）に
+                # そのままセル編集を任せる（素通し）。それ以外は検索自体を
+                # 起こさせないためイベントを握りつぶす。
+                if not (
+                    self._editModeActive and self._current_cell_editable()
+                ):
+                    return True
         return super().eventFilter(obj, event)
+
+    @staticmethod
+    def _is_typeahead_key(event):
+        if event.modifiers() & (
+            Qt.KeyboardModifier.ControlModifier
+            | Qt.KeyboardModifier.AltModifier
+            | Qt.KeyboardModifier.MetaModifier
+        ):
+            return False
+        text = event.text()
+        return bool(text) and text.isprintable()
+
+    def _current_cell_editable(self):
+        index = self.tbl.currentIndex()
+        return index.isValid() and bool(
+            self._filterProxy.flags(index) & Qt.ItemFlag.ItemIsEditable
+        )
 
     def _scroll_table_horizontally(self, event):
         # Shift+ホイールで横スクロール（Excelのセル操作と同じ挙動）。tbl側の
@@ -644,6 +722,113 @@ class CompartmentCompassWindow(QWidget):
         notches = delta / 120.0
         step = hbar.singleStep() * QApplication.wheelScrollLines()
         hbar.setValue(round(hbar.value() - notches * step))
+
+    # -- コピー&ペースト（Excel風） -----------------------------------------
+
+    def _copy_selected_cells(self):
+        # 選択範囲の外接矩形をタブ区切りテキストとしてクリップボードへ書き出す
+        # （Excel等の表計算ソフトとの相互貼り付けも兼ねる）。飛び地選択は
+        # 非対応（外接矩形をそのまま書き出すのみ）。
+        indexes = self.tbl.selectionModel().selectedIndexes()
+        if not indexes:
+            return
+        rows = [i.row() for i in indexes]
+        cols = [i.column() for i in indexes]
+        top, bottom = min(rows), max(rows)
+        left, right = min(cols), max(cols)
+        lines = []
+        for row in range(top, bottom + 1):
+            cells = [
+                str(self._filterProxy.index(row, col).data(
+                    Qt.ItemDataRole.DisplayRole
+                ) or '')
+                for col in range(left, right + 1)
+            ]
+            lines.append('\t'.join(cells))
+        QApplication.clipboard().setText('\n'.join(lines))
+
+    def _paste_into_selected_cells(self):
+        if not self._editModeActive:
+            return
+        layer = self._currentLayer
+        if layer is None or not layer.isEditable():
+            return
+        selected_rc = {
+            (index.row(), index.column())
+            for index in self.tbl.selectionModel().selectedIndexes()
+        }
+        if not selected_rc:
+            return
+        clip_text = QApplication.clipboard().text()
+        if not clip_text:
+            return
+        text_rows = clip_text.replace('\r\n', '\n').replace('\r', '\n').split(
+            '\n'
+        )
+        while text_rows and text_rows[-1] == '':
+            text_rows.pop()
+        clip_grid = [row.split('\t') for row in text_rows]
+        if not clip_grid:
+            return
+
+        if len(clip_grid) == 1 and len(clip_grid[0]) == 1:
+            # 単一セルをコピーした場合は、選択中の全セルへ同じ値を貼り付ける
+            # （塗りつぶし）。
+            value_text = clip_grid[0][0]
+            targets = [(r, c, value_text) for (r, c) in selected_rc]
+        else:
+            # 範囲をコピーした場合は、選択範囲の左上を起点にコピー範囲の
+            # 形のまま貼り付ける。
+            anchor_row = min(r for r, _ in selected_rc)
+            anchor_col = min(c for _, c in selected_rc)
+            targets = [
+                (anchor_row + i, anchor_col + j, value_text)
+                for i, row_vals in enumerate(clip_grid)
+                for j, value_text in enumerate(row_vals)
+            ]
+
+        # 貼り付け全体をUndo1ステップにまとめる（QGIS標準のEdit>Undoで戻せる
+        # ようにするため）。セル単位のdataChangedは一旦止め、最後に貼り付け
+        # 範囲全体で1回だけ発行することで、大量貼り付け時の再描画負荷を抑える。
+        layer.beginEditCommand(self.tr('Paste cells'))
+        self._filterProxy.set_bulk_edit_mode(True)
+        changed_indexes = []
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        try:
+            for row, col, value_text in targets:
+                index = self._filterProxy.index(row, col)
+                if not index.isValid():
+                    continue
+                if not (
+                    self._filterProxy.flags(index)
+                    & Qt.ItemFlag.ItemIsEditable
+                ):
+                    continue
+                if self._filterProxy.setData(
+                    index, value_text, Qt.ItemDataRole.EditRole
+                ):
+                    changed_indexes.append(index)
+        finally:
+            self._filterProxy.set_bulk_edit_mode(False)
+            QApplication.restoreOverrideCursor()
+
+        if changed_indexes:
+            layer.endEditCommand()
+            rows = [i.row() for i in changed_indexes]
+            cols = [i.column() for i in changed_indexes]
+            top_left = self._filterProxy.index(min(rows), min(cols))
+            bottom_right = self._filterProxy.index(max(rows), max(cols))
+            self._filterProxy.dataChanged.emit(
+                top_left,
+                bottom_right,
+                [
+                    Qt.ItemDataRole.EditRole,
+                    Qt.ItemDataRole.DisplayRole,
+                    Qt.ItemDataRole.ForegroundRole,
+                ],
+            )
+        else:
+            layer.destroyEditCommand()
 
     def _clear_selected_filter_cells(self):
         items = self.filterTbl.selectedItems()
@@ -875,7 +1060,7 @@ class CompartmentCompassWindow(QWidget):
         # before dropping Python references, otherwise rebuilding the table can
         # leave Qt touching a deleted QgsAttributeTableModel.
         self._filterProxy.setSourceModel(None)
-        self._filterProxy.clear_unsaved_edits()
+        self._filterProxy.clear_original_values()
         self._tableModel = None
         self._layerCache = None
 
@@ -995,9 +1180,19 @@ class CompartmentCompassWindow(QWidget):
             return
         layer.startEditing()
         self._editModeActive = True
+        # QGIS標準のEdit>Undo/RedoやEdit>Save Layer Editsが、このパネルで
+        # 編集中のレイヤーに対して働くようにする（このプラグインは独自の
+        # Undo/Redoボタンを持たない）。副作用として、QGISのレイヤーパネル側の
+        # アクティブレイヤーもこのレイヤーに切り替わる——編集中のレイヤーが
+        # どれか一目で分かる利点として許容している。
+        self.iface.setActiveLayer(layer)
+        # AnyKeyPressedにより、セルを選択した状態で文字を打つと（Excel同様）
+        # その場でセル編集が始まり、打った文字が入力される。eventFilter側で
+        # Qt標準のkeyboardSearch（現在列の全件検索）より先にこちらを使う。
         self.tbl.setEditTriggers(
             QTableView.EditTrigger.DoubleClicked
             | QTableView.EditTrigger.EditKeyPressed
+            | QTableView.EditTrigger.AnyKeyPressed
         )
 
     def _try_exit_edit_mode(self):
@@ -1021,14 +1216,15 @@ class CompartmentCompassWindow(QWidget):
                 if result == QMessageBox.StandardButton.Cancel:
                     return False
                 if result == QMessageBox.StandardButton.Save:
-                    # コミット失敗時は未保存のまま＝該当セルは赤字表示を維持する。
-                    if layer.commitChanges():
-                        self._filterProxy.clear_unsaved_edits()
+                    layer.commitChanges()
                 else:
                     layer.rollBack()
-                    self._filterProxy.clear_unsaved_edits()
             else:
                 layer.commitChanges()
+            # コミット後は今の値が新しい「元の値」になり、破棄後は編集前の
+            # 値に戻っている。いずれの場合も赤字判定の基準をリセットして
+            # 再描画する。
+            self._filterProxy.clear_original_values()
             self.tbl.viewport().update()
         self._editModeActive = False
         self.tbl.setEditTriggers(QTableView.EditTrigger.NoEditTriggers)

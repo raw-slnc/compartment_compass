@@ -23,7 +23,7 @@ repository=https://github.com/raw-slnc/compartment_compass
 
 hasProcessingProvider=no
 changelog=
-    0.1.2 - Improve focus-sync behavior between the table and the map; add Shift+wheel horizontal scrolling to the table; show unsaved edited cells in red text until saved (edit mode).
+    0.1.2 - Improve focus-sync behavior between the table and the map; add Shift+wheel horizontal scrolling to the table; improve edit-mode functionality (copy/paste, undo/redo).
     0.1.1 - Initial public QGIS 4.x release. Add OR ("|") syntax to the filter row, combinable with the existing AND (comma) and exclude (!) syntax.
     0.1.0 - Layer picker; spreadsheet-style table with a per-column filter row (text substring match, numeric comparisons with >,>=,<,<=,==,!=); column display/info/hidden configuration; table-map selection sync with zoom-to-selection and cell-value tooltip; Info tab with configurable fields plus a fixed QGIS internal ID display; GeoPackage-only inline attribute editing with a save/discard/cancel prompt; English/Japanese UI language toggle; dock or separate-window display mode
 
