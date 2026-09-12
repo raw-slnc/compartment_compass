@@ -1338,6 +1338,10 @@ class CompartmentCompassWindow(QWidget):
         self._syncing_selection = True
         try:
             layer.selectByIds(self._get_selected_fids())
+        except RuntimeError:
+            # レイヤーのC++実体が既に削除済み（QGIS/プロジェクト終了時の
+            # クリーンアップ中にテーブルの選択変更シグナルが遅れて届く場合）。
+            return
         finally:
             self._syncing_selection = False
         self._refresh_layer_selection(layer)
@@ -1480,7 +1484,15 @@ class CompartmentCompassWindow(QWidget):
             selection_model = self.tbl.selectionModel()
             if selection_model is None:
                 return
-            # SelectItems設定に合わせ、行全体ではなく列0のセルのみをハイライトする。
+            # SelectItems設定に合わせ、行全体ではなく1列のセルのみをハイライトする。
+            # 列0固定だと、その列がユーザー設定で非表示にされた場合に
+            # ハイライトが見えなくなる（列自体は非表示でも選択状態や
+            # スクロールは機能するため気付きにくい）。ここでは非表示でない
+            # 先頭の表示列（_modelColumnOrderは表示→情報→非表示の順で
+            # ソートされている）を使う。
+            highlight_col = (
+                self._modelColumnOrder[0] if self._modelColumnOrder else 0
+            )
             select_flags = QItemSelectionModel.SelectionFlag.Select
             first_proxy_row = None
             for fid in selected_ids:
@@ -1488,7 +1500,7 @@ class CompartmentCompassWindow(QWidget):
                 if source_row < 0:
                     continue
                 proxy_index = self._filterProxy.mapFromSource(
-                    self._tableModel.index(source_row, 0)
+                    self._tableModel.index(source_row, highlight_col)
                 )
                 if not proxy_index.isValid():
                     continue  # 絞り込みで除外されている
@@ -1496,7 +1508,9 @@ class CompartmentCompassWindow(QWidget):
                 if first_proxy_row is None:
                     first_proxy_row = proxy_index.row()
             if first_proxy_row is not None:
-                scroll_index = self._filterProxy.index(first_proxy_row, 0)
+                scroll_index = self._filterProxy.index(
+                    first_proxy_row, highlight_col
+                )
                 self.tbl.scrollTo(
                     scroll_index, QAbstractItemView.ScrollHint.PositionAtCenter
                 )

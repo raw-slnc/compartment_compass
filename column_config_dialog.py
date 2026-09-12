@@ -7,6 +7,7 @@ from qgis.PyQt.QtWidgets import (
     QGridLayout,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QSizePolicy,
     QSpacerItem,
@@ -162,6 +163,23 @@ class ColumnConfigDialog(QDialog):
         next_state = _STATES[(idx + 1) % len(_STATES)]
         self._config[col_name] = next_state
         self._apply_btn_state(btn, next_state)
+
+    def accept(self):
+        if self.columns and all(
+            state == COLUMN_HIDDEN for state in self._config.values()
+        ):
+            first_column = self.columns[0]
+            self._config[first_column] = COLUMN_DISPLAY
+            self._rebuild_grid()
+            QMessageBox.warning(
+                self,
+                self.tr('Column config'),
+                self.tr(
+                    'Hiding all columns is not allowed. The first column,'
+                    ' "{0}", has been changed to Display.'
+                ).format(first_column),
+            )
+        super().accept()
 
     def _prev_page(self):
         if self._current_page > 0:

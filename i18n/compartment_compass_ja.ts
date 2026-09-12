@@ -33,6 +33,11 @@
         <source>Hidden</source>
         <translation>非表示</translation>
     </message>
+    <message>
+        <location filename="../column_config_dialog.py" line="176"/>
+        <source>Hiding all columns is not allowed. The first column, &quot;{0}&quot;, has been changed to Display.</source>
+        <translation>すべての列を非表示にすることはできません。先頭列の「{0}」を表示に変更しました。</translation>
+    </message>
 </context>
 <context>
     <name>CompartmentCompass</name>

@@ -1,5 +1,8 @@
 # -*- coding: utf-8 -*-
 import os
+import sys
+import traceback
+from datetime import datetime
 
 from qgis.PyQt.QtCore import QCoreApplication, QSettings, Qt, QTranslator
 from qgis.PyQt.QtGui import QIcon
@@ -25,6 +28,8 @@ class CompartmentCompass:
         self._switching_container = False
         self._translator = None
         self._active_locale = 'en'
+        self._error_log_path = os.path.join(self.plugin_dir, 'error.log')
+        self._previous_excepthook = None
 
     @staticmethod
     def tr(message):
@@ -32,6 +37,26 @@ class CompartmentCompass:
 
     def get_active_locale(self):
         return self._active_locale
+
+    def _log_uncaught_exception(self, exc_type, exc_value, exc_tb):
+        # PyQtはスロット内の未処理例外をsys.excepthook経由でコンソールに出す
+        # だけなので、QGIS終了時に一瞬表示されて読めない問題への対策として
+        # ファイルにも残す。原因がプラグイン外でも記録され得るが、他に捕まえる
+        # 手段が無いため許容する。
+        try:
+            with open(self._error_log_path, 'a', encoding='utf-8') as f:
+                f.write(
+                    '\n--- {0} ---\n'.format(
+                        datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    )
+                )
+                traceback.print_exception(
+                    exc_type, exc_value, exc_tb, file=f
+                )
+        except OSError:
+            pass
+        if self._previous_excepthook is not None:
+            self._previous_excepthook(exc_type, exc_value, exc_tb)
 
     def _remove_translator(self):
         if self._translator:
@@ -71,6 +96,9 @@ class CompartmentCompass:
             self.window.retranslate_ui()
 
     def initGui(self):
+        if self._previous_excepthook is None:
+            self._previous_excepthook = sys.excepthook
+            sys.excepthook = self._log_uncaught_exception
         self.set_language(None)
         icon_path = os.path.join(self.plugin_dir, 'icon.svg')
         action = QAction(
@@ -103,6 +131,10 @@ class CompartmentCompass:
             self.dock.deleteLater()
             self.dock = None
         self.window = None
+
+        if self._previous_excepthook is not None:
+            sys.excepthook = self._previous_excepthook
+            self._previous_excepthook = None
 
     def _ensure_window(self):
         if self.window is None:
