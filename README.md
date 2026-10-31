@@ -3,7 +3,7 @@
 A QGIS plugin that lets you filter, search, and — for GeoPackage layers — edit forest planning map data (森林計画図: national/private forest compartments, 小班・林班) in a spreadsheet-style table kept in sync with the map.
 
 ![QGIS](https://img.shields.io/badge/QGIS-4.0%2B-green)
-![Version](https://img.shields.io/badge/version-0.1.0-blue)
+![Version](https://img.shields.io/badge/version-0.2.0-blue)
 
 ![Screenshot](use_compartment_compass.png)
 
@@ -21,6 +21,7 @@ Attribute editing works best when you can cross-check visual location and attrib
 
 - **Spreadsheet-style filter row**: a per-column search row above the table — filter on any column, text or numeric
 - **Table-map sync**: moving through the table highlights and zooms to the matching feature on the map; the selected cell's value is shown as a popup
+- **Filter by selection**: narrow the table down to the features currently selected, then keep searching within them with the filter row
 - **Column modes**: set each column to shown / info (pinned at the end of the table, in orange) / hidden
 - **Info tab**: shows your chosen fields (label: value) plus the QGIS-assigned ID (feature.id()) for individual identification. All fields are shown by default; narrowing the shown fields can reduce selection and rendering load
 - **GeoPackage editing**: edit cells directly in the table, but only for GeoPackage-format layers
@@ -49,6 +50,15 @@ Examples
 ```
 
 The same examples are also available (and copyable) in the panel's "Tips" tab.
+
+### Filter by selection
+
+The "Filter by selection" button (to the left of the edit-mode button) narrows the table down to the features that are selected at the moment you press it — for example, select an area on the map, then look through just those features in the table. The button is available while features are selected.
+
+- While it is active, the feature count at the bottom shows "(filtered by selection)".
+- You can keep narrowing with the filter row; its conditions are combined (AND) with the selection.
+- Clicking rows in the table or the filter row does not clear it.
+- To clear it, press the button again, or select (or deselect) features on the map.
 
 ### Column modes
 
@@ -127,6 +137,7 @@ This plugin was created to improve workflow efficiency. The author is not respon
 
 - **スプレッドシート風の絞り込み行**: テーブル上部の検索行で、任意の列（テキスト・数値）を対象に絞り込める
 - **テーブルと地図の連動**: テーブル上を移動するたびに、対応する地物が地図上でハイライト・ズームされ、選択されたセルの値をポップアップ表示します。
+- **選択で絞り込み**: 選択中の地物だけにテーブルを絞り込み、その中をさらに絞り込み行で検索できる
 - **列の表示モード**: 列ごとに「表示／情報（末尾に橙色で固定表示）／非表示」を設定できる
 - **Info タブ**: 任意に選んだフィールド（label: value形式）に加え、個体識別用にQGISが割り振るID（feature.id()）を表示
   デフォルトで全件表示しています。表示項目を絞ることで選択操作/描画負担を軽減できます。
@@ -156,6 +167,15 @@ This plugin was created to improve workflow efficiency. The author is not respon
 ```
 
 同様の例は、パネル内「Tips」タブでも確認・コピーできます。
+
+### 選択で絞り込み
+
+編集モードボタンの左にある「選択で絞り込み」ボタンを押すと、押した時点で選択されている地物だけにテーブルを絞り込みます。たとえば地図上で範囲を選択し、その中の地物だけをテーブルで確認する、といった使い方ができます。地物が選択されているときに押せます。
+
+- 絞り込み中は、下部の件数表示に「（選択で絞り込み中）」と表示されます。
+- 絞り込み行でさらに絞り込めます（選択との AND 条件になります）。
+- テーブルの行や絞り込み行をクリックしても解除されません。
+- 解除するには、もう一度ボタンを押すか、地図上で選択（または選択解除）します。
 
 ### 列の表示モード
 

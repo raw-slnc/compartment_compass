@@ -5,6 +5,7 @@ import re
 from qgis.PyQt.QtCore import (
     QElapsedTimer,
     QEvent,
+    QItemSelection,
     QItemSelectionModel,
     QPoint,
     QSettings,
@@ -40,6 +41,7 @@ from qgis.core import (
     Qgis,
     QgsCoordinateTransform,
     QgsCsException,
+    QgsExpression,
     QgsFeatureRequest,
     QgsLayerTreeLayer,
     QgsProject,
@@ -218,6 +220,49 @@ def _looks_like_numeric_comparison_filter(filter_text):
     return all(matched) and any(m.group(1) for m in matched)
 
 
+def _cell_matches(cell_text, filter_text, use_numeric):
+    if use_numeric:
+        return _numeric_match(cell_text, filter_text)
+    return _text_match(cell_text, filter_text)
+
+
+def _value_filter_expression(layer, field_index, filter_text, use_numeric):
+    """列の値の一覧（uniqueValues）を判定し、一致した値だけを通す式を返す。
+
+    全件を読んで1件ずつ判定すると、GPKGからの読み出しだけで26万件で約4秒
+    かかる（判定自体は1秒未満）。uniqueValuesはプロバイダ側（SQLite等）で
+    集計されるため速く、林班・樹種など値の種類が少ない列では判定も数百回で
+    済む。値がすべて異なる列（26万種類）でも全件判定より速いことを実機で
+    確認済み。判定は全件判定と同じ関数で行うため、絞り込みの書式はそのまま。
+
+    戻り値: 式の文字列。一致する値が無い場合は''。
+    式に値を書けない型（日付等）の値がある場合はNone（呼び出し側で全件判定）。
+    """
+    matched = []
+    null_matched = False
+    for value in layer.uniqueValues(field_index):
+        if value is None:
+            # 全件判定と同じく、NULLは空文字として判定する
+            null_matched = null_matched or _cell_matches(
+                '', filter_text, use_numeric
+            )
+            continue
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            return None
+        if _cell_matches(str(value), filter_text, use_numeric):
+            matched.append(value)
+    column = QgsExpression.quotedColumnRef(
+        layer.fields().at(field_index).name()
+    )
+    parts = []
+    if matched:
+        values = ','.join(QgsExpression.quotedValue(v) for v in matched)
+        parts.append(f'{column} IN ({values})')
+    if null_matched:
+        parts.append(f'{column} IS NULL')
+    return ' OR '.join(parts)
+
+
 # 大規模レイヤーでも全件を即座にウィジェット化しない（QGIS標準の属性テーブルと
 # 同じ QgsVectorLayerCache のキャッシュ上限）。行数はロード直後に確定するが、
 # 実際の属性値は表示に必要な範囲だけ遅延取得される。
@@ -253,7 +298,11 @@ class _ColumnFilterProxyModel(QSortFilterProxyModel):
 
     def set_matching_fids(self, fids):
         self._matchingFids = fids
-        self.invalidateFilter()
+        # invalidateFilter()は行の出入りを連続範囲ごとに通知するため、飛び飛びに
+        # 除外されていた行を戻す（絞り込み解除）と26万件で約6秒かかった。
+        # invalidate()は対応表を作り直して1回の通知で済む（同条件で約0.2秒）。
+        # このビューは並べ替えを使っていないため、並び順のリセットは影響しない。
+        self.invalidate()
 
     def set_readonly_columns(self, cols):
         self._readonlyColumns = set(cols)
@@ -281,7 +330,9 @@ class _ColumnFilterProxyModel(QSortFilterProxyModel):
         return fid in self._matchingFids
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
-        if role == Qt.ItemDataRole.ForegroundRole:
+        # 描画のたびに表示中の全セルで呼ばれるため、未保存編集が無い（通常時）
+        # はセルごとの元の値の照合を省く。
+        if role == Qt.ItemDataRole.ForegroundRole and self._originalValues:
             source_index = self.mapToSource(index)
             source_model = self.sourceModel()
             if source_model is not None:
@@ -402,6 +453,11 @@ class CompartmentCompassWindow(QWidget):
         self._activeFilters = {}  # {col: (text, is_numeric)}、確定済みの絞り込み条件
         self._prevActiveFilters = {}  # 直前にrecomputeした時点のactiveFilters
         self._prevMatchedFids = None  # 直前の一致fid集合（条件追加時の母集合再利用用）
+        # 検索行の条件だけで求めた一致fid集合（Noneは条件なし）。「選択で絞り込み」
+        # の切替時に検索をやり直さず、この集合と組み合わせるために保持する。
+        self._columnMatchedFids = None
+        # 「選択で絞り込み」を押した時点の選択fid集合（Noneは未使用）
+        self._selectionFilterFids = None
         self._load_saved_state()
 
         # セル値ツールチップ用のフローティングラベル（QToolTipはマウス位置に応じて
@@ -606,6 +662,14 @@ class CompartmentCompassWindow(QWidget):
         self.lblLegendJoin.setVisible(False)
         bottomRow.addWidget(self.lblLegendJoin)
         bottomRow.addStretch(1)
+        # 押した時点の選択でテーブルを絞り込む（もう一度押すと解除）。オン/オフの
+        # 見た目は持たせず、状態は件数表示の文言で示す。
+        self.btnSelectionFilter = QPushButton(self.tr('Filter by selection'))
+        self.btnSelectionFilter.setEnabled(False)
+        self.btnSelectionFilter.clicked.connect(
+            self._on_selection_filter_clicked
+        )
+        bottomRow.addWidget(self.btnSelectionFilter)
         self.btnEditMode = QPushButton(self.tr('Edit'))
         self.btnEditMode.setCheckable(True)
         self.btnEditMode.setEnabled(False)
@@ -847,10 +911,18 @@ class CompartmentCompassWindow(QWidget):
     def _focus_table_first_row(self):
         if self._tableModel is None and not self._ensure_table_loaded():
             return
+        visual_col = max(self.filterTbl.currentColumn(), 0)
+        # 入力中の検索セルは、フォーカスを移すと確定する。デバウンスを待たずに
+        # その場で絞り込みを反映してから先頭行を選ぶ。待つと、反映前の結果の
+        # 先頭行を選んで地図をズーム（描画開始）した直後に絞り込みが入り、
+        # 選んだ行が消えるうえ、描画が立て続けにやり直される（実機でこの操作
+        # の直後にQGISがラベル描画中に落ちた）。
+        self.tbl.setFocus()
+        self._flush_pending_filters()
         row = self._first_visible_row()
         if row < 0:
+            self.filterTbl.setFocus()
             return
-        visual_col = max(self.filterTbl.currentColumn(), 0)
         model_col = (
             self._modelColumnOrder[visual_col]
             if visual_col < len(self._modelColumnOrder)
@@ -948,6 +1020,8 @@ class CompartmentCompassWindow(QWidget):
             self._currentLayer, self.lblLegendJoin.isVisible()
         )
         self._update_layer_type_label(self._currentLayer)
+        self.btnSelectionFilter.setText(self.tr('Filter by selection'))
+        self._update_count_label()
         self.btnEditMode.setText(self.tr('Edit'))
         self.btnShowAllFields.setText(self.tr('Show all fields'))
         self.lblAllInfoMode.setText(
@@ -1469,32 +1543,86 @@ class CompartmentCompassWindow(QWidget):
             pass  # 未接続、または削除済みレイヤーの場合
 
     def _on_layer_selection_changed(self, *_args):
+        # テーブル操作由来（_syncing_selection中）の選択変更でも、ボタンの
+        # 押せる/押せないは更新する。
+        self._update_selection_filter_button()
         if self._syncing_selection:
             return
-        self._sync_table_selection_from_layer()
+        # ここに来るのは地図側（テーブル操作以外）での選択変更。選択で絞り込み
+        # 中なら解除する（テーブル側の行選択・検索行の操作では解除しない）。
+        if self._selectionFilterFids is not None:
+            self._selectionFilterFids = None
+            self._apply_matching_fids(
+                self._columnMatchedFids, reduce_selection=False
+            )
+            self._update_count_label()
+            self._update_selection_filter_button()
+        # 検索行にいた場合は、その列のままtbl側へ移る（↓キーでの移動と同じ）。
+        self._sync_table_selection_from_layer(
+            column=self._current_filter_model_column()
+        )
+        if self.tbl.selectionModel().hasSelection():
+            self._release_filter_row()
 
-    def _sync_table_selection_from_layer(self):
+    def _current_filter_model_column(self):
+        if not self.filterTbl.currentIndex().isValid():
+            return None
+        visual_col = self.filterTbl.currentColumn()
+        if 0 <= visual_col < len(self._modelColumnOrder):
+            return self._modelColumnOrder[visual_col]
+        return None
+
+    def _release_filter_row(self):
+        # 地図側で選択した場合も、テーブルの行をクリックした時と同様に検索行の
+        # ハイライトを解除する。フォーカスが検索行（編集中のセルを含む）に
+        # 残っていればtblへ移す。先にフォーカスを移すことで、編集中の検索
+        # セルは通常どおり確定してから閉じる。
+        focus = QApplication.focusWidget()
+        if focus is not None and (
+            focus is self.filterTbl or self.filterTbl.isAncestorOf(focus)
+        ):
+            self.tbl.setFocus()
+        self._syncing_selection = True
+        try:
+            self.filterTbl.clearSelection()
+            self.filterTbl.selectionModel().clearCurrentIndex()
+        finally:
+            self._syncing_selection = False
+
+    def _sync_table_selection_from_layer(
+        self, scroll=True, column=None, refresh_map=True
+    ):
         layer = self._currentLayer
         if layer is None or self._tableModel is None:
             return
         selected_ids = layer.selectedFeatureIds()
         self._syncing_selection = True
         try:
-            self.tbl.clearSelection()
             selection_model = self.tbl.selectionModel()
             if selection_model is None:
                 return
+            # clearSelection()は選択中のセルを1つずつ処理するため、10万件選択で
+            # 約0.5秒かかった。reset()は通知なしで一度に捨てる（現在のセルも
+            # 消えるため後で戻し、見た目はviewport().update()で描き直す）。
+            previous_current = selection_model.currentIndex()
+            selection_model.reset()
             # SelectItems設定に合わせ、行全体ではなく1列のセルのみをハイライトする。
             # 列0固定だと、その列がユーザー設定で非表示にされた場合に
             # ハイライトが見えなくなる（列自体は非表示でも選択状態や
             # スクロールは機能するため気付きにくい）。ここでは非表示でない
             # 先頭の表示列（_modelColumnOrderは表示→情報→非表示の順で
-            # ソートされている）を使う。
-            highlight_col = (
-                self._modelColumnOrder[0] if self._modelColumnOrder else 0
-            )
-            select_flags = QItemSelectionModel.SelectionFlag.Select
-            first_proxy_row = None
+            # ソートされている）を使う。columnの指定があればその列にする。
+            if column is not None:
+                highlight_col = column
+            else:
+                highlight_col = (
+                    self._modelColumnOrder[0] if self._modelColumnOrder else 0
+                )
+            # 1件ずつselection_model.select()すると、選択の結合処理が毎回走り
+            # 5000件で約1.4秒かかった。QItemSelectionにまとめて1回で選択する。
+            # さらに連続する行は1つの範囲にまとめる（範囲の数が選択処理の重さ
+            # に効くため。10万件の選択で約0.5秒→範囲の数次第で大幅に短縮）。
+            proxy_rows = []
             for fid in selected_ids:
                 source_row = self._tableModel.idToRow(fid)
                 if source_row < 0:
@@ -1504,23 +1632,53 @@ class CompartmentCompassWindow(QWidget):
                 )
                 if not proxy_index.isValid():
                     continue  # 絞り込みで除外されている
-                selection_model.select(proxy_index, select_flags)
-                if first_proxy_row is None:
-                    first_proxy_row = proxy_index.row()
+                proxy_rows.append(proxy_index.row())
+            proxy_rows.sort()
+            selection = QItemSelection()
+            range_start = None
+            previous_row = None
+            for row in proxy_rows + [None]:
+                if (
+                    range_start is not None
+                    and (row is None or row != previous_row + 1)
+                ):
+                    selection.select(
+                        self._filterProxy.index(range_start, highlight_col),
+                        self._filterProxy.index(previous_row, highlight_col),
+                    )
+                    range_start = None
+                if row is not None and range_start is None:
+                    range_start = row
+                previous_row = row
+            if not selection.isEmpty():
+                selection_model.select(
+                    selection, QItemSelectionModel.SelectionFlag.Select
+                )
+            # スクロール・現在のセルは選択のうち一番上の行に合わせる。
+            first_proxy_row = proxy_rows[0] if proxy_rows else None
+            if first_proxy_row is None and previous_current.isValid():
+                selection_model.setCurrentIndex(
+                    previous_current,
+                    QItemSelectionModel.SelectionFlag.NoUpdate,
+                )
+            self.tbl.viewport().update()
             if first_proxy_row is not None:
                 scroll_index = self._filterProxy.index(
                     first_proxy_row, highlight_col
                 )
-                self.tbl.scrollTo(
-                    scroll_index, QAbstractItemView.ScrollHint.PositionAtCenter
-                )
+                if scroll:
+                    self.tbl.scrollTo(
+                        scroll_index,
+                        QAbstractItemView.ScrollHint.PositionAtCenter,
+                    )
                 # NoUpdateで選択状態を変えずにcurrentIndexだけ合わせる（Infoタブ用）。
                 selection_model.setCurrentIndex(
                     scroll_index, QItemSelectionModel.SelectionFlag.NoUpdate
                 )
         finally:
             self._syncing_selection = False
-        self._refresh_layer_selection(layer)
+        if refresh_map:
+            self._refresh_layer_selection(layer)
         self._update_info_tab()
 
     def _refresh_layer_selection(self, layer):
@@ -1562,8 +1720,23 @@ class CompartmentCompassWindow(QWidget):
             self.tbl.verticalHeader().sizeHint().width(),
             self.filterTbl.verticalHeader().sizeHint().width(),
         )
+        if (
+            self.tbl.verticalHeader().width() == width
+            and self.filterTbl.verticalHeader().width() == width
+        ):
+            return
         self.filterTbl.verticalHeader().setFixedWidth(width)
         self.tbl.verticalHeader().setFixedWidth(width)
+        # ここは縦スクロールバーのrangeChanged（＝ビューがupdateGeometries()で
+        # 配置を計算している最中）から呼ばれることが多い。その最中に幅を変えても
+        # ビューは再計算を受け付けず（再入防止）、表示部分が古い行番号幅の位置の
+        # ままになって列が上下でずれた（実機で11件に絞った時に18pxずれた）。
+        # 計算が終わってから配置を計算し直させる。
+        QTimer.singleShot(0, self._refresh_table_geometries)
+
+    def _refresh_table_geometries(self):
+        self.tbl.updateGeometries()
+        self.filterTbl.updateGeometries()
 
     def _sync_filter_viewport_margin(self, *_args):
         self._sync_row_header_width()
@@ -1596,6 +1769,10 @@ class CompartmentCompassWindow(QWidget):
         self._activeFilters = {}
         self._prevActiveFilters = {}
         self._prevMatchedFids = None
+        self._columnMatchedFids = None
+        # レイヤー切替・列設定の変更など、絞り込みをリセットする場面では
+        # 選択で絞り込みも解除する。
+        self._selectionFilterFids = None
         self._filterDebounceTimer.stop()
 
     def _ordered_layer_fields(self, layer):
@@ -1635,6 +1812,7 @@ class CompartmentCompassWindow(QWidget):
             if layer is None:
                 self.filterTbl.setColumnCount(0)
                 self.lblCount.setText('')
+                self.btnSelectionFilter.setEnabled(False)
                 self._displayedFieldNames = []
                 self._modelColumnOrder = []
                 self._modelColToFieldIndex = {}
@@ -1729,14 +1907,8 @@ class CompartmentCompassWindow(QWidget):
 
             self._fit_filter_table_height()
             self._sync_filter_viewport_margin()
-            row_count = (
-                self._filterProxy.rowCount()
-                if self._tableModel is not None
-                else layer.featureCount()
-            )
-            self.lblCount.setText(
-                self.tr('{0} features').format(row_count)
-            )
+            self._update_count_label()
+            self._update_selection_filter_button()
         finally:
             if _SUPPRESS_TABLE_LAYOUT_SIGNALS:
                 table_header.blockSignals(table_header_signals_blocked)
@@ -1800,17 +1972,26 @@ class CompartmentCompassWindow(QWidget):
             # 大規模レイヤーでも表示に必要な行だけ遅延取得される
             # QgsVectorLayerCache+QgsAttributeTableModel（QGIS標準の属性テーブルと
             # 同じ仕組み）を使う。全フィーチャーの即時ウィジェット化はしない。
-            # loadLayer()自体は進捗を取得できないため、不定形（busy）表示にする。
-            self.filterProgressBar.setRange(0, 0)
-            self.filterProgressBar.show()
+            # loadLayer()の進捗通知（progress(int, bool&)）はPythonから受け取れず、
+            # 実行中は画面の描画も止まるため、不定形（busy）のプログレスバーを
+            # 出しても動かない。読み込み前に文字で知らせておく。
+            self.lblCount.setText(
+                self.tr('Processing... this may take a while for large layers')
+            )
+            # processEvents()で配置（幅）は更新されるが、広がった部分の描画は
+            # 後回しになり、そのままloadLayer()で止まると文字が途中で切れて
+            # 見えた。下の行（件数・凡例・ボタン）をその場で描画させる。
             QApplication.processEvents()
+            self.lblCount.parentWidget().repaint(
+                self.lblCount.geometry().united(
+                    self.btnLanguage.geometry()
+                ).adjusted(-2, -2, 2, 2)
+            )
             self._layerCache = QgsVectorLayerCache(layer, _LAYER_CACHE_SIZE)
             self._layerCache.setCacheGeometry(False)
             self._tableModel = QgsAttributeTableModel(self._layerCache)
             self._tableModel.loadLayer()
             self._filterProxy.setSourceModel(self._tableModel)
-            self.filterProgressBar.hide()
-            self.filterProgressBar.setRange(0, 1)
 
             self._apply_table_column_layout(layer, reset_filters=False)
         finally:
@@ -1843,6 +2024,11 @@ class CompartmentCompassWindow(QWidget):
         )
         self._filterDebounceTimer.start(_FILTER_DEBOUNCE_MS)
 
+    def _flush_pending_filters(self):
+        if self._filterDebounceTimer.isActive():
+            self._filterDebounceTimer.stop()
+            self._commit_pending_filters()
+
     def _commit_pending_filters(self):
         for model_col, (text, is_numeric) in self._pendingFilters.items():
             text = text.strip()
@@ -1852,9 +2038,108 @@ class CompartmentCompassWindow(QWidget):
                 self._activeFilters.pop(model_col, None)
         self._pendingFilters = {}
         self._recompute_filter_matches()
-        self.lblCount.setText(
-            self.tr('{0} features').format(self._filterProxy.rowCount())
+        self._update_count_label()
+
+    def _update_count_label(self):
+        layer = self._currentLayer
+        if layer is None:
+            self.lblCount.setText('')
+            return
+        row_count = (
+            self._filterProxy.rowCount()
+            if self._tableModel is not None
+            else layer.featureCount()
         )
+        if self._selectionFilterFids is not None:
+            text = self.tr('{0} features (filtered by selection)')
+        else:
+            text = self.tr('{0} features')
+        self.lblCount.setText(text.format(row_count))
+
+    # -- 選択で絞り込み -------------------------------------------------
+
+    def _update_selection_filter_button(self):
+        layer = self._currentLayer
+        try:
+            has_selection = (
+                layer is not None and layer.selectedFeatureCount() > 0
+            )
+        except RuntimeError:
+            has_selection = False  # レイヤーのC++実体が削除済み
+        # 絞り込み中は、選択が無くても解除のために押せるままにする。
+        self.btnSelectionFilter.setEnabled(
+            self._tableModel is not None
+            and (self._selectionFilterFids is not None or has_selection)
+        )
+
+    def _on_selection_filter_clicked(self):
+        layer = self._currentLayer
+        if layer is None or self._tableModel is None:
+            return
+        self._flush_pending_filters()
+        if self._selectionFilterFids is not None:
+            self._selectionFilterFids = None
+        else:
+            fids = set(layer.selectedFeatureIds())
+            if not fids:
+                return
+            self._selectionFilterFids = fids
+        self._apply_combined_filter()
+        self._update_count_label()
+        self._update_selection_filter_button()
+
+    def _apply_combined_filter(self):
+        # 検索行の条件（_columnMatchedFids）と選択で絞り込み（_selectionFilterFids）
+        # はANDで組み合わせる。どちらもNoneなら絞り込み無し。
+        fids = self._columnMatchedFids
+        selection_fids = self._selectionFilterFids
+        if selection_fids is not None:
+            fids = (
+                set(selection_fids) if fids is None else fids & selection_fids
+            )
+        self._apply_matching_fids(fids)
+
+    def _apply_matching_fids(self, fids, reduce_selection=True):
+        # 絞り込みの反映（set_matching_fids→invalidate()）でテーブルの選択は
+        # すべて消える。そのまま選択変更が地図へ伝わると地図の選択まで消える
+        # ため、伝播を止めてから、地図の選択のうち絞り込み後も見えている地物
+        # だけを残して選び直す（見えなくなった地物は地図の選択からも外す。
+        # invalidateFilter()を使っていた時と同じ結果）。選択が減った場合は、
+        # 当時と同じく残った選択へズーム（またはパン）する。
+        # reduce_selection=Falseは地図側で選び直した直後用（地図の選択は
+        # ユーザーが今決めたものなので、絞り込みに合わせて減らさない）。
+        layer = self._currentLayer
+        previous_syncing = self._syncing_selection
+        self._syncing_selection = True
+        selection_reduced = False
+        try:
+            # 表の選択は後で地図の選択から選び直すため、invalidate()の前に
+            # 通知なしで捨てておく。選択を残したままだと、invalidate()が選択中の
+            # セルを1つずつ付け替えるため10万件選択で約1.2秒かかった。
+            self.tbl.selectionModel().reset()
+            self._filterProxy.set_matching_fids(fids)
+            if layer is None:
+                return
+            selected_ids = layer.selectedFeatureIds()
+            if reduce_selection and fids is not None and selected_ids:
+                kept = [fid for fid in selected_ids if fid in fids]
+                if len(kept) != len(selected_ids):
+                    layer.selectByIds(kept)
+                    selection_reduced = True
+        finally:
+            self._syncing_selection = previous_syncing
+        # 地図の選択が変わらないなら地図は描き直さない（入力のたびに描画を
+        # やり直させない）。
+        self._sync_table_selection_from_layer(
+            scroll=False, refresh_map=selection_reduced
+        )
+        # 行数（行番号の桁数）が変わっても縦スクロールの範囲が変わらない場合は
+        # rangeChangedが来ないため、ここでも行番号の幅を合わせる。
+        self._sync_row_header_width()
+        if selection_reduced:
+            self._zoom_to_selection(
+                layer, pan_only=self.chkDisableZoom.isChecked()
+            )
 
     def _recompute_filter_matches(self):
         # filterAcceptsRow内でindex.data()を行数分×列数分呼ぶと、大規模レイヤーで
@@ -1864,11 +2149,11 @@ class CompartmentCompassWindow(QWidget):
         layer = self._currentLayer
         if layer is None or not self._activeFilters:
             self.filterProgressBar.hide()
-            self._filterProxy.set_matching_fids(None)
+            self._columnMatchedFids = None
+            self._apply_combined_filter()
             return
 
         checks = []
-        needed_indexes = []
         for model_col, (text, is_numeric) in self._activeFilters.items():
             field_index = self._modelColToFieldIndex.get(model_col)
             if field_index is None:
@@ -1877,35 +2162,82 @@ class CompartmentCompassWindow(QWidget):
                 is_numeric or _looks_like_numeric_comparison_filter(text)
             )
             checks.append((field_index, text, use_numeric))
-            needed_indexes.append(field_index)
-        needed_indexes = sorted(set(needed_indexes))
         if not checks:
             self.filterProgressBar.hide()
-            self._filterProxy.set_matching_fids(None)
+            self._columnMatchedFids = None
+            self._apply_combined_filter()
             return
 
-        # 直前の条件がすべて今回にも同じ値で残っている（＝条件を追加しただけ）なら、
-        # 直前の一致fid集合を母集合として走査対象を絞り込める。条件の変更・削除は
-        # 前回の集合が正しい母集合でなくなるため、全件走査に戻す。
-        can_narrow_from_previous = self._prevMatchedFids is not None and all(
-            self._activeFilters.get(k) == v
-            for k, v in self._prevActiveFilters.items()
-        )
-
-        request = QgsFeatureRequest()
-        request.setSubsetOfAttributes(needed_indexes)
-        request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
-        if can_narrow_from_previous:
-            request.setFilterFids(list(self._prevMatchedFids))
-
-        total = (
-            len(self._prevMatchedFids)
-            if can_narrow_from_previous
-            else layer.featureCount()
-        )
-        self.filterProgressBar.setRange(0, max(total, 1))
-        self.filterProgressBar.setValue(0)
+        # uniqueValues中は進捗が取れないため、不定形（busy）表示にしておく。
+        self.filterProgressBar.setRange(0, 0)
         self.filterProgressBar.show()
+        QApplication.processEvents()
+
+        # 列ごとに、値の一覧から一致する値を求めて式にする（_value_filter_expression）。
+        # 式にできない列だけ、従来どおり全件を読んで1件ずつ判定する。
+        expressions = []
+        scan_checks = []
+        no_match = False
+        for field_index, text, use_numeric in checks:
+            expression = _value_filter_expression(
+                layer, field_index, text, use_numeric
+            )
+            if expression is None:
+                scan_checks.append((field_index, text, use_numeric))
+            elif not expression:
+                no_match = True
+                break
+            else:
+                expressions.append(f'({expression})')
+
+        matched = set()
+        if not no_match:
+            matched = self._collect_matching_fids(
+                layer, expressions, scan_checks
+            )
+
+        self.filterProgressBar.hide()
+        self._prevActiveFilters = dict(self._activeFilters)
+        self._prevMatchedFids = matched
+        self._columnMatchedFids = matched
+        self._apply_combined_filter()
+
+    def _collect_matching_fids(self, layer, expressions, scan_checks):
+        request = QgsFeatureRequest()
+        request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
+        if scan_checks:
+            request.setSubsetOfAttributes(
+                sorted({field_index for field_index, _, _ in scan_checks})
+            )
+        else:
+            request.setNoAttributes()
+
+        total = 0
+        if expressions:
+            request.setFilterExpression(' AND '.join(expressions))
+        else:
+            # 全件判定だけの場合、直前の条件がすべて今回にも同じ値で残っている
+            # （＝条件を追加しただけ）なら、直前の一致fid集合を母集合として走査
+            # 対象を絞り込める。条件の変更・削除は前回の集合が正しい母集合で
+            # なくなるため、全件走査に戻す。
+            can_narrow_from_previous = (
+                self._prevMatchedFids is not None
+                and all(
+                    self._activeFilters.get(k) == v
+                    for k, v in self._prevActiveFilters.items()
+                )
+            )
+            if can_narrow_from_previous:
+                request.setFilterFids(list(self._prevMatchedFids))
+            total = (
+                len(self._prevMatchedFids)
+                if can_narrow_from_previous
+                else layer.featureCount()
+            )
+        # 式で絞る場合は件数が事前に分からないため、busy表示のままにする。
+        if total:
+            self.filterProgressBar.setRange(0, total)
+            self.filterProgressBar.setValue(0)
         progress_timer = QElapsedTimer()
         progress_timer.start()
 
@@ -1913,15 +2245,10 @@ class CompartmentCompassWindow(QWidget):
         processed = 0
         for feature in layer.getFeatures(request):
             ok = True
-            for field_index, text, is_numeric in checks:
+            for field_index, text, use_numeric in scan_checks:
                 value = feature.attribute(field_index)
                 cell_text = '' if value is None else str(value)
-                matched_this = (
-                    _numeric_match(cell_text, text)
-                    if is_numeric
-                    else _text_match(cell_text, text)
-                )
-                if not matched_this:
+                if not _cell_matches(cell_text, text, use_numeric):
                     ok = False
                     break
             if ok:
@@ -1930,14 +2257,11 @@ class CompartmentCompassWindow(QWidget):
             # 全件ごとにprocessEventsを呼ぶとオーバーヘッドが積み重なるため、
             # 100ms間隔でのみ描画更新する（進捗の粒度と処理速度のバランス）。
             if progress_timer.elapsed() >= 100:
-                self.filterProgressBar.setValue(processed)
+                if total:
+                    self.filterProgressBar.setValue(processed)
                 QApplication.processEvents()
                 progress_timer.restart()
-
-        self.filterProgressBar.hide()
-        self._prevActiveFilters = dict(self._activeFilters)
-        self._prevMatchedFids = matched
-        self._filterProxy.set_matching_fids(matched)
+        return matched
 
     # -- Settingタブ ---------------------------------------------------
 

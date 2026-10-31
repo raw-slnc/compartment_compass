@@ -165,6 +165,21 @@
         <translation>{0} 件</translation>
     </message>
     <message>
+        <location filename="../panel_widget.py" line="2002"/>
+        <source>{0} features (filtered by selection)</source>
+        <translation>{0} 件（選択で絞り込み中）</translation>
+    </message>
+    <message>
+        <location filename="../panel_widget.py" line="667"/>
+        <source>Filter by selection</source>
+        <translation>選択で絞り込み</translation>
+    </message>
+    <message>
+        <location filename="../panel_widget.py" line="1979"/>
+        <source>Processing... this may take a while for large layers</source>
+        <translation>処理中...件数によっては時間がかかります</translation>
+    </message>
+    <message>
         <location filename="../panel_widget.py" line="1618"/>
         <source>QGIS internal ID:</source>
         <translation>QGIS内識別番号:</translation>

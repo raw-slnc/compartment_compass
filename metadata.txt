@@ -8,12 +8,12 @@ qgisMinimumVersion=4.0.0
 qgisMaximumVersion=4.99
 description=Filter, search, and edit vector layer attributes in a spreadsheet-style table that stays in sync with the map — find the feature first, then confirm it on the map, then act on it. Helps manage data where the map and its attributes are closely linked, such as forest planning maps (森林計画図).
 description[ja]=地図と連動するスプレッドシート風テーブルで、ベクタレイヤーの属性を絞り込み・検索・編集します。まず地物を見つけ、地図で確認してから操作する、というテーブル視点の設計です。森林計画図のように地図と情報が密接に結びついたデータの管理をサポートします。
-version=0.1.3
+version=0.2.0
 author=Hideharu Masai
 email=hideharumasai@void.mints.ne.jp
 
-about=Most attribute-editing plugins start from selecting a feature on the map, then editing its attributes. Compartment Compass works the other way around: the attribute table is the starting point. Filter across any column with a per-column, spreadsheet-style search row to find the exact compartment you need, watch it get highlighted and zoomed on the map as you move through the table, and edit GeoPackage values directly in the table. Built for Japan's national and private forest planning map data, but works with any vector layer already loaded in the project; it does not download or install data itself.
-about[ja]=多くの属性編集系プラグインは「地図上で地物を選択してから属性を書き換える」という順序ですが、Compartment Compassは逆に「属性テーブルを主役にして、そこから目的の地物を絞り込み、地図で確認し、必要なら編集する」という順序で設計しています。スプレッドシート風の列ごと検索行で任意の列を絞り込み、テーブル上を移動するたびに対応する地物が地図上でハイライト・ズームされます。GeoPackageレイヤーであれば、その場でセルを直接編集することもできます。日本の森林計画図（国有林・民有林、小班・林班）データを主な対象としていますが、プロジェクトに読み込み済みの任意のベクタレイヤーに使えます。データの自動ダウンロード・設置は行いません。
+about=Most attribute-editing plugins start from selecting a feature on the map, then editing its attributes. Compartment Compass works the other way around: the attribute table is the starting point. Filter across any column with a per-column, spreadsheet-style search row to find the exact compartment you need, watch it get highlighted and zoomed on the map as you move through the table, and edit GeoPackage values directly in the table. Built for Japan's national and private forest planning map data, but works with any vector layer already loaded in the project.
+about[ja]=多くの属性編集系プラグインは「地図上で地物を選択してから属性を書き換える」という順序ですが、Compartment Compassは逆に「属性テーブルを主役にして、そこから目的の地物を絞り込み、地図で確認し、必要なら編集する」という順序で設計しています。スプレッドシート風の列ごと検索行で任意の列を絞り込み、テーブル上を移動するたびに対応する地物が地図上でハイライト・ズームされます。GeoPackageレイヤーであれば、その場でセルを直接編集することもできます。日本の森林計画図（国有林・民有林、小班・林班）データを主な対象としていますが、プロジェクトに読み込み済みの任意のベクタレイヤーに使えます。
 
 tracker=https://github.com/raw-slnc/compartment_compass/issues
 repository=https://github.com/raw-slnc/compartment_compass
@@ -23,6 +23,7 @@ repository=https://github.com/raw-slnc/compartment_compass
 
 hasProcessingProvider=no
 changelog=
+    0.2.0 - Add a "Filter by selection" button: narrow the table down to the currently selected features, then keep searching within them with the filter row; press it again or select on the map to clear it. Improved search stability and speed: filtering and clearing filters on large layers is much faster, moving from the filter row to the table with the arrow key now applies the filter you were typing first, and selecting on the map moves the focus from the filter row to the same column in the table. Fixed the filter row and table columns sometimes going out of alignment after filtering, and show a message while a large layer is loading.
     0.1.3 - Fixed table highlighting from map selection when columns are hidden, and improved column settings so at least one table column remains visible.
     0.1.2 - Improve focus-sync behavior between the table and the map; add Shift+wheel horizontal scrolling to the table; improve edit-mode functionality (copy/paste, undo/redo).
     0.1.1 - Initial public QGIS 4.x release. Add OR ("|") syntax to the filter row, combinable with the existing AND (comma) and exclude (!) syntax.
