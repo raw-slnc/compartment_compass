@@ -13,6 +13,7 @@ from qgis.PyQt.QtCore import (
     Qt,
     QTimer,
 )
+from qgis.PyQt import sip
 from qgis.PyQt.QtGui import QColor, QKeySequence, QPalette
 from qgis.PyQt.QtWidgets import (
     QAbstractItemView,
@@ -458,6 +459,7 @@ class CompartmentCompassWindow(QWidget):
         self._columnMatchedFids = None
         # 「選択で絞り込み」を押した時点の選択fid集合（Noneは未使用）
         self._selectionFilterFids = None
+        self._filterGeneration = 0  # 検索ごとに進める番号（古い検索の中止判定用）
         self._load_saved_state()
 
         # セル値ツールチップ用のフローティングラベル（QToolTipはマウス位置に応じて
@@ -918,7 +920,8 @@ class CompartmentCompassWindow(QWidget):
         # 選んだ行が消えるうえ、描画が立て続けにやり直される（実機でこの操作
         # の直後にQGISがラベル描画中に落ちた）。
         self.tbl.setFocus()
-        self._flush_pending_filters()
+        if not self._flush_pending_filters():
+            return
         row = self._first_visible_row()
         if row < 0:
             self.filterTbl.setFocus()
@@ -1162,6 +1165,14 @@ class CompartmentCompassWindow(QWidget):
         if current_id != self.cmbLayer.currentData():
             self._on_layer_selected(self.cmbLayer.currentIndex())
 
+    def _process_events_alive(self):
+        # processEvents()で画面処理に戻っている間に、パネルを閉じる・プラグインを
+        # 再読み込みする・QGISを終了するなどでこのウィジェットが削除されることが
+        # ある。その後で部品に触れるとRuntimeErrorになる（Windowsで検索中に
+        # プログレスバーが削除済みのエラーが記録された）。続けてよいかを返す。
+        QApplication.processEvents()
+        return not sip.isdeleted(self)
+
     def _on_layer_selected(self, _index):
         layer_id = self.cmbLayer.currentData()
         layer = QgsProject.instance().mapLayer(layer_id) if layer_id else None
@@ -1177,7 +1188,8 @@ class CompartmentCompassWindow(QWidget):
         # 効いていないように見える。
         self.btnEditMode.setEnabled(self._is_gpkg_layer(layer))
         self._update_layer_type_label(layer)
-        QApplication.processEvents()
+        if not self._process_events_alive():
+            return
         self._reset_column_config(layer)
         if _DEFER_TABLE_LOAD_ON_LAYER_SELECT and layer is not None:
             self._reset_filter_state()
@@ -1185,6 +1197,8 @@ class CompartmentCompassWindow(QWidget):
             self._apply_table_column_layout(layer, reset_filters=False)
         else:
             self._populate_table(layer)
+            if sip.isdeleted(self):
+                return  # 読み込み前の画面処理中にパネルが削除された
         self._refresh_setting_combos(layer)
         if layer is not None:
             self._apply_selection_color(layer)
@@ -1366,6 +1380,8 @@ class CompartmentCompassWindow(QWidget):
                     )
                 finally:
                     self._syncing_selection = False
+        if sip.isdeleted(self):
+            return  # 読み込み前の画面処理中にパネルが削除された
         # 検索行(filterTbl)をクリックした場合も、逆方向として下テーブル側の
         # ハイライトを解除する。clearSelection()だけだとcurrentIndexが残り、
         # 非アクティブ状態の薄い塗りとして見えてしまう＋Infoタブが古い地物の
@@ -1950,6 +1966,8 @@ class CompartmentCompassWindow(QWidget):
             return False
         filter_texts = self._filter_texts_by_name()
         self._populate_table(layer)
+        if sip.isdeleted(self):
+            return False  # 読み込み前の画面処理中にパネルが削除された
         self._restore_filter_texts_by_name(filter_texts)
         return self._tableModel is not None
 
@@ -1967,7 +1985,8 @@ class CompartmentCompassWindow(QWidget):
             # loadLayer()中はUI更新が止まるため、先に列名・検索行・件数だけ描画して
             # 「対象レイヤーを認識済みで、これからデータ行を読む」段階を見せる。
             self._apply_table_column_layout(layer, reset_filters=False)
-            QApplication.processEvents()
+            if not self._process_events_alive():
+                return
 
             # 大規模レイヤーでも表示に必要な行だけ遅延取得される
             # QgsVectorLayerCache+QgsAttributeTableModel（QGIS標準の属性テーブルと
@@ -1981,7 +2000,8 @@ class CompartmentCompassWindow(QWidget):
             # processEvents()で配置（幅）は更新されるが、広がった部分の描画は
             # 後回しになり、そのままloadLayer()で止まると文字が途中で切れて
             # 見えた。下の行（件数・凡例・ボタン）をその場で描画させる。
-            QApplication.processEvents()
+            if not self._process_events_alive():
+                return
             self.lblCount.parentWidget().repaint(
                 self.lblCount.geometry().united(
                     self.btnLanguage.geometry()
@@ -1995,8 +2015,6 @@ class CompartmentCompassWindow(QWidget):
 
             self._apply_table_column_layout(layer, reset_filters=False)
         finally:
-            self.filterProgressBar.hide()
-            self.filterProgressBar.setRange(0, 1)
             self._syncing_selection = previous_syncing
             self._populatingTable = False
 
@@ -2025,9 +2043,12 @@ class CompartmentCompassWindow(QWidget):
         self._filterDebounceTimer.start(_FILTER_DEBOUNCE_MS)
 
     def _flush_pending_filters(self):
+        # 検索中の画面処理でパネルが削除されることがあるため、続けてよいかを
+        # 返す（呼び出し側はFalseならウィジェットに触れずに戻る）。
         if self._filterDebounceTimer.isActive():
             self._filterDebounceTimer.stop()
             self._commit_pending_filters()
+        return not sip.isdeleted(self)
 
     def _commit_pending_filters(self):
         for model_col, (text, is_numeric) in self._pendingFilters.items():
@@ -2038,6 +2059,8 @@ class CompartmentCompassWindow(QWidget):
                 self._activeFilters.pop(model_col, None)
         self._pendingFilters = {}
         self._recompute_filter_matches()
+        if sip.isdeleted(self):
+            return  # 検索中の画面処理でパネルが削除された
         self._update_count_label()
 
     def _update_count_label(self):
@@ -2076,7 +2099,8 @@ class CompartmentCompassWindow(QWidget):
         layer = self._currentLayer
         if layer is None or self._tableModel is None:
             return
-        self._flush_pending_filters()
+        if not self._flush_pending_filters():
+            return
         if self._selectionFilterFids is not None:
             self._selectionFilterFids = None
         else:
@@ -2146,6 +2170,10 @@ class CompartmentCompassWindow(QWidget):
         # キャッシュ/プロバイダ往復が積み重なり致命的に遅くなる（14万件で約29秒）。
         # ここで一括スキャンして一致fidの集合を先に作り、プロキシ側はその集合との
         # 所属確認（O(1)）だけにする。
+        # 検索ごとに番号を進める。画面処理の間に次の検索が始まったら、この検索は
+        # 中止する（_search_still_current）。
+        self._filterGeneration += 1
+        generation = self._filterGeneration
         layer = self._currentLayer
         if layer is None or not self._activeFilters:
             self.filterProgressBar.hide()
@@ -2171,7 +2199,8 @@ class CompartmentCompassWindow(QWidget):
         # uniqueValues中は進捗が取れないため、不定形（busy）表示にしておく。
         self.filterProgressBar.setRange(0, 0)
         self.filterProgressBar.show()
-        QApplication.processEvents()
+        if not self._search_still_current(layer, generation):
+            return
 
         # 列ごとに、値の一覧から一致する値を求めて式にする（_value_filter_expression）。
         # 式にできない列だけ、従来どおり全件を読んで1件ずつ判定する。
@@ -2193,8 +2222,10 @@ class CompartmentCompassWindow(QWidget):
         matched = set()
         if not no_match:
             matched = self._collect_matching_fids(
-                layer, expressions, scan_checks
+                layer, expressions, scan_checks, generation
             )
+            if matched is None:
+                return  # 中止（後から始まった検索・切替後の処理に任せる）
 
         self.filterProgressBar.hide()
         self._prevActiveFilters = dict(self._activeFilters)
@@ -2202,7 +2233,10 @@ class CompartmentCompassWindow(QWidget):
         self._columnMatchedFids = matched
         self._apply_combined_filter()
 
-    def _collect_matching_fids(self, layer, expressions, scan_checks):
+    def _collect_matching_fids(
+        self, layer, expressions, scan_checks, generation
+    ):
+        # 途中で中止した場合はNoneを返す（_search_still_current）。
         request = QgsFeatureRequest()
         request.setFlags(QgsFeatureRequest.Flag.NoGeometry)
         if scan_checks:
@@ -2259,9 +2293,22 @@ class CompartmentCompassWindow(QWidget):
             if progress_timer.elapsed() >= 100:
                 if total:
                     self.filterProgressBar.setValue(processed)
-                QApplication.processEvents()
+                if not self._search_still_current(layer, generation):
+                    return None
                 progress_timer.restart()
         return matched
+
+    def _search_still_current(self, layer, generation):
+        # 画面処理の間に、パネルの削除・レイヤーの切替・新しい検索の開始
+        # （入力の続きで次の検索が割り込む）が起きていれば、この検索は中止する。
+        # 続けると、削除済みの部品に触れてエラーになったり、古い結果で新しい
+        # 結果を上書きしたりする。
+        if not self._process_events_alive():
+            return False
+        return (
+            self._currentLayer is layer
+            and self._filterGeneration == generation
+        )
 
     # -- Settingタブ ---------------------------------------------------
 
